@@ -145,9 +145,27 @@ def make_empty_df(columns: Iterable[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=list(columns))
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def read_sheet(worksheet: str) -> pd.DataFrame:
+    """Google Sheet 데이터를 20초 동안 캐시합니다.
+
+    학생 화면은 한 번의 rerun에서 여러 탭의 코드를 모두 실행할 수 있기 때문에
+    매번 Google API를 호출하면 로딩이 매우 느려집니다. 저장/수정 후에는
+    st.cache_data.clear()로 캐시를 비워 최신 데이터가 바로 반영되게 합니다.
+    """
+    if worksheet not in SHEET_CONFIG:
+        raise ValueError(f"지원하지 않는 worksheet: {worksheet}")
+
     conn = get_connection()
-    df = conn.read(worksheet=worksheet, ttl=0)
+    try:
+        df = conn.read(worksheet=worksheet, ttl=20)
+    except Exception as error:
+        raise RuntimeError(
+            f"Google Sheets의 '{worksheet}' 탭을 읽을 수 없습니다. "
+            "서비스 계정 인증([connections.gsheets]), Google Sheet 공유(Editor), "
+            "worksheet 이름을 확인하세요. "
+            f"원본 오류: {error}"
+        ) from error
     if df is None:
         return make_empty_df(SHEET_CONFIG[worksheet])
 
@@ -157,29 +175,6 @@ def read_sheet(worksheet: str) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
     return df[expected]
-
-
-def ensure_worksheets() -> None:
-    """
-    CRUD를 위해 각 worksheet가 없으면 기본 헤더를 가진 worksheet를 생성.
-    처음 1회 실행 시에만 생성되고, 이미 존재하면 그대로 사용한다.
-    """
-    conn = get_connection()
-
-    for worksheet, columns in SHEET_CONFIG.items():
-        try:
-            _ = conn.read(worksheet=worksheet, ttl=0)
-        except Exception:
-            try:
-                conn.create(
-                    worksheet=worksheet,
-                    data=make_empty_df(columns),
-                )
-            except Exception as create_error:
-                raise RuntimeError(
-                    f"'{worksheet}' 시트를 자동 생성할 수 없습니다: {create_error}"
-                ) from create_error
-
 
 def update_sheet(worksheet: str, df: pd.DataFrame) -> None:
     conn = get_connection()
@@ -1495,18 +1490,8 @@ def main() -> None:
     init_session_state()
     inject_css()
 
-    # Google Sheets 연결 실패 시 오류 원인을 사용자에게 명확히 보여준다.
-    try:
-        ensure_worksheets()
-    except Exception as error:
-        st.error("Google Sheets 연결 또는 worksheet 초기화에 실패했습니다.")
-        st.code(str(error))
-        st.info(
-            "Community Cloud에서는 App settings → Secrets에 "
-            "[connections.gsheets] 설정을 넣고, 해당 서비스 계정에 "
-            "스프레드시트 편집 권한(Editor)을 부여했는지 확인하세요."
-        )
-        st.stop()
+    # 연결은 실제로 데이터가 필요할 때 지연해서 읽습니다.
+    # 앱 시작 시 5개 worksheet를 전부 읽지 않아 초기 로딩을 줄입니다.
 
     page = st.session_state.get("page", "home")
 
