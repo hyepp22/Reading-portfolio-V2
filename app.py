@@ -209,22 +209,55 @@ def get_gemini_model() -> str:
 
 
 def get_app_secret(name: str, default: Any = None) -> Any:
-    """Read app settings from [app], with legacy top-level fallback."""
+    """
+    App 설정을 최대한 폭넓게 읽는다.
+
+    우선순위:
+    1) [app] 섹션
+    2) 최상위 teacher_password / enable_demo_accounts
+    3) [connections.gsheets] 안에 잘못 넣은 경우도 호환
+       (향후에는 [app] 사용을 권장)
+    """
+    # 1. [app]
     try:
-        app_secrets = st.secrets.get("app", {})
-        if isinstance(app_secrets, dict) and name in app_secrets:
-            return app_secrets[name]
+        app_secrets = st.secrets["app"]
+        try:
+            value = app_secrets[name]
+            if value is not None and normalize_text(value) != "":
+                return value
+        except (KeyError, TypeError):
+            pass
     except Exception:
         pass
 
+    # 2. top-level
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets[name]
+        if value is not None and normalize_text(value) != "":
+            return value
+    except (KeyError, TypeError):
+        pass
     except Exception:
-        return default
+        pass
+
+    # 3. [connections.gsheets] (호환용)
+    try:
+        gsheets = st.secrets["connections"]["gsheets"]
+        try:
+            value = gsheets[name]
+            if value is not None and normalize_text(value) != "":
+                return value
+        except (KeyError, TypeError):
+            pass
+    except Exception:
+        pass
+
+    return default
 
 
 def get_teacher_password() -> str:
-    return normalize_text(get_app_secret("teacher_password", ""))
+    value = get_app_secret("teacher_password", "")
+    return normalize_text(value)
 
 
 def demo_enabled() -> bool:
@@ -1844,7 +1877,9 @@ def render_teacher_login() -> None:
         if not configured_password:
             st.error(
                 "교사 비밀번호가 설정되지 않았습니다. "
-                ".streamlit/secrets.toml의 teacher_password를 설정해 주세요."
+                "Streamlit Cloud의 Secrets에 teacher_password가 없습니다. "
+                "[app] 아래 teacher_password = \"1234\"를 넣거나, "
+                "최상위에 teacher_password = \"1234\"를 넣어 주세요."
             )
         elif password == configured_password:
             st.session_state.update(
