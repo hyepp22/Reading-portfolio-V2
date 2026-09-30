@@ -5,7 +5,8 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 
 
 # =========================================================
@@ -61,13 +62,76 @@ def init_session_state() -> None:
             st.session_state[key] = value
 
 
-def get_connection() -> GSheetsConnection:
-    # spreadsheet URL은 app.py에서 지정하고, 인증정보는 secrets.toml에서 가져옵니다.
-    return st.connection(
-        "gsheets",
-        type=GSheetsConnection,
-        spreadsheet=GOOGLE_SHEET_URL,
-    )
+@st.cache_resource
+def get_gspread_client():
+    """secrets.toml의 서비스 계정 인증정보로 gspread 클라이언트를 생성합니다."""
+    try:
+        # [connections.gsheets] 아래에 있는 서비스 계정 정보만 사용합니다.
+        # spreadsheet URL은 보안정보가 아니므로 app.py의 GOOGLE_SHEET_URL에 고정합니다.
+        config = dict(st.secrets["connections"]["gsheets"])
+    except Exception as error:
+        raise RuntimeError(
+            "secrets.toml의 [connections.gsheets] 설정을 찾을 수 없습니다."
+        ) from error
+
+    required_keys = [
+        "type",
+        "project_id",
+        "private_key_id",
+        "private_key",
+        "client_email",
+        "client_id",
+        "auth_uri",
+        "token_uri",
+        "auth_provider_x509_cert_url",
+        "client_x509_cert_url",
+    ]
+
+    missing = [key for key in required_keys if not normalize_text(config.get(key, ""))]
+    if missing:
+        raise RuntimeError(
+            "서비스 계정 인증정보가 부족합니다. 누락된 항목: " + ", ".join(missing)
+        )
+
+    if normalize_text(config.get("type")) != "service_account":
+        raise RuntimeError(
+            "[connections.gsheets]의 type은 service_account여야 합니다."
+        )
+
+    credentials_info = {key: config[key] for key in required_keys if key != "type"}
+    credentials_info["type"] = "service_account"
+
+    return gspread.service_account_from_dict(credentials_info)
+
+
+@st.cache_resource
+def get_spreadsheet():
+    """Python 코드에 고정한 Google Sheet URL로 스프레드시트를 엽니다."""
+    try:
+        return get_gspread_client().open_by_url(GOOGLE_SHEET_URL)
+    except SpreadsheetNotFound as error:
+        raise RuntimeError(
+            "Google Sheet를 찾을 수 없습니다. 서비스 계정 client_email이 "
+            "'독서 포트폴리오 테스트' 시트의 편집자로 공유되어 있는지 확인하세요."
+        ) from error
+    except Exception as error:
+        raise RuntimeError(f"Google Sheet 연결 실패: {error}") from error
+
+
+def get_worksheet(worksheet: str):
+    try:
+        return get_spreadsheet().worksheet(worksheet)
+    except WorksheetNotFound:
+        try:
+            return get_spreadsheet().add_worksheet(
+                title=worksheet,
+                rows=1000,
+                cols=max(8, len(SHEET_CONFIG[worksheet])),
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"'{worksheet}' worksheet를 생성할 수 없습니다: {error}"
+            ) from error
 
 
 def normalize_text(value: Any) -> str:
@@ -147,12 +211,16 @@ def make_empty_df(columns: Iterable[str]) -> pd.DataFrame:
 
 
 def read_sheet(worksheet: str) -> pd.DataFrame:
-    conn = get_connection()
-    df = conn.read(worksheet=worksheet, ttl=0)
-    if df is None:
+    ws = get_worksheet(worksheet)
+    try:
+        records = ws.get_all_records(default_blank="")
+    except TypeError:
+        records = ws.get_all_records()
+
+    if not records:
         return make_empty_df(SHEET_CONFIG[worksheet])
 
-    df = df.copy()
+    df = pd.DataFrame(records)
     expected = SHEET_CONFIG[worksheet]
     for col in expected:
         if col not in df.columns:
@@ -162,28 +230,34 @@ def read_sheet(worksheet: str) -> pd.DataFrame:
 
 def ensure_worksheets() -> None:
     """
-    CRUD를 위해 각 worksheet가 없으면 기본 헤더를 가진 worksheet를 생성.
-    처음 1회 실행 시에만 생성되고, 이미 존재하면 그대로 사용한다.
+    CRUD를 위해 각 worksheet가 없으면 생성하고, 첫 행에 표준 헤더를 준비합니다.
+    이미 헤더가 있으면 데이터를 건드리지 않습니다.
     """
-    conn = get_connection()
+    spreadsheet = get_spreadsheet()
 
     for worksheet, columns in SHEET_CONFIG.items():
         try:
-            _ = conn.read(worksheet=worksheet, ttl=0)
-        except Exception:
-            try:
-                conn.create(
-                    worksheet=worksheet,
-                    data=make_empty_df(columns),
-                )
-            except Exception as create_error:
-                raise RuntimeError(
-                    f"'{worksheet}' 시트를 자동 생성할 수 없습니다: {create_error}"
-                ) from create_error
+            ws = spreadsheet.worksheet(worksheet)
+        except WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(
+                title=worksheet,
+                rows=1000,
+                cols=max(8, len(columns)),
+            )
+
+        first_row = ws.row_values(1)
+        if not first_row:
+            ws.update("A1", [columns], raw=True)
+        else:
+            existing = [normalize_text(v) for v in first_row[: len(columns)]]
+            if existing != columns:
+                # 사용자가 이미 만든 탭의 헤더가 요구사항과 다를 때는 자동 덮어쓰지 않습니다.
+                # read_sheet()가 필요한 열을 보완할 수 있도록 그대로 둡니다.
+                pass
 
 
 def update_sheet(worksheet: str, df: pd.DataFrame) -> None:
-    conn = get_connection()
+    ws = get_worksheet(worksheet)
     expected = SHEET_CONFIG[worksheet]
     output = df.copy()
 
@@ -191,9 +265,17 @@ def update_sheet(worksheet: str, df: pd.DataFrame) -> None:
         if col not in output.columns:
             output[col] = ""
 
-    output = output[expected]
-    conn.update(worksheet=worksheet, data=output)
-    st.cache_data.clear()
+    output = output[expected].copy()
+    output = output.where(pd.notna(output), "")
+
+    values = [expected]
+    if not output.empty:
+        values.extend(output.astype(object).values.tolist())
+
+    # 사용자가 원하는 시트 구조를 유지하면서 전체 데이터를 최신 상태로 갱신합니다.
+    ws.clear()
+    ws.update("A1", values, raw=True)
+    st.cache_resource.clear()
 
 
 def append_row(worksheet: str, row: Dict[str, Any]) -> None:
