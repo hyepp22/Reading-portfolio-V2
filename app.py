@@ -14,6 +14,10 @@ from streamlit_gsheets import GSheetsConnection
 APP_TITLE = "중학교 독서 포트폴리오"
 APP_SUBTITLE = "15~17차시 한 학기 독서 누적 기록 & 수행평가 관리 시스템"
 
+# Google Sheet 문서 주소는 코드에 고정합니다.
+# 서비스 계정 인증정보(private_key 등)는 반드시 secrets.toml에 보관하세요.
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1fB5c_VQequRNY7PsJ9dUwt3_jzsIJlhACPNRu5IkIEU/edit"
+
 SHEET_CONFIG = {
     "Students": ["학번", "이름", "PIN", "등록일"],
     "Books": ["학번", "도서번호", "도서명", "저자", "총페이지수"],
@@ -58,7 +62,12 @@ def init_session_state() -> None:
 
 
 def get_connection() -> GSheetsConnection:
-    return st.connection("gsheets", type=GSheetsConnection)
+    # spreadsheet URL은 app.py에서 지정하고, 인증정보는 secrets.toml에서 가져옵니다.
+    return st.connection(
+        "gsheets",
+        type=GSheetsConnection,
+        spreadsheet=GOOGLE_SHEET_URL,
+    )
 
 
 def normalize_text(value: Any) -> str:
