@@ -1,11 +1,22 @@
+import base64
 import hashlib
+import json
+import re
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # Gemini OCR 기능을 사용하지 않는 환경에서도 앱이 기동되도록 처리
+    genai = None
+    types = None
 
 
 # =========================================================
@@ -33,6 +44,7 @@ SHEET_CONFIG = {
     ],
     "Evaluations": ["학번", "차시", "점수", "교사피드백", "최종평어"],
     "Settings": ["총차시수"],
+    "Schedules": ["학반", "차시", "작성일"],
 }
 
 DEFAULT_TOTAL_SESSIONS = 16
@@ -43,6 +55,33 @@ DEMO_ACCOUNTS = [
     {"학번": "20315", "이름": "김예시", "PIN": "1111"},
     {"학번": "20507", "이름": "이참관", "PIN": "2222"},
 ]
+
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+KST = ZoneInfo("Asia/Seoul")
+
+OCR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "book_title": {"type": "string"},
+        "author": {"type": "string"},
+        "page_range": {"type": "string"},
+        "summary": {"type": "string"},
+        "quote": {"type": "string"},
+        "question": {"type": "string"},
+        "answer": {"type": "string"},
+        "thoughts": {"type": "string"},
+    },
+    "required": [
+        "book_title",
+        "author",
+        "page_range",
+        "summary",
+        "quote",
+        "question",
+        "answer",
+        "thoughts",
+    ],
+}
 
 
 # =========================================================
@@ -118,7 +157,55 @@ def verify_pin(input_pin: str, stored_value: Any) -> bool:
 
 
 def now_string() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+
+
+def today_kst() -> date:
+    return datetime.now(KST).date()
+
+
+def student_to_class_code(student_id: str) -> str:
+    """20315 -> 2-03 (2학년 3반)."""
+    sid = normalize_student_id(student_id)
+    if len(sid) == 5 and sid[0].isdigit() and sid[1:3].isdigit():
+        return f"{sid[0]}-{int(sid[1:3]):02d}"
+    return ""
+
+
+def format_class_code(class_code: str) -> str:
+    if "-" in class_code:
+        grade, cls = class_code.split("-", 1)
+        return f"{grade}학년 {int(cls)}반"
+    return class_code
+
+
+def get_gemini_api_key() -> str:
+    try:
+        value = st.secrets.get("gemini_api_key", "")
+        if value:
+            return normalize_text(value)
+    except Exception:
+        pass
+
+    try:
+        gemini_secrets = st.secrets.get("gemini", {})
+        if isinstance(gemini_secrets, dict):
+            return normalize_text(gemini_secrets.get("api_key", ""))
+    except Exception:
+        pass
+    return ""
+
+
+def get_gemini_model() -> str:
+    try:
+        gemini_secrets = st.secrets.get("gemini", {})
+        if isinstance(gemini_secrets, dict):
+            return normalize_text(
+                gemini_secrets.get("model", GEMINI_DEFAULT_MODEL)
+            ) or GEMINI_DEFAULT_MODEL
+    except Exception:
+        pass
+    return GEMINI_DEFAULT_MODEL
 
 
 def get_app_secret(name: str, default: Any = None) -> Any:
@@ -156,7 +243,7 @@ def make_empty_df(columns: Iterable[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def read_sheet(worksheet: str) -> pd.DataFrame:
-    """Google Sheet 데이터를 20초 동안 캐시합니다.
+    """Google Sheet 데이터를 60초 동안 캐시합니다.
 
     학생 화면은 한 번의 rerun에서 여러 탭의 코드를 모두 실행할 수 있기 때문에
     매번 Google API를 호출하면 로딩이 매우 느려집니다. 저장/수정 후에는
@@ -249,6 +336,226 @@ def delete_matching_rows(
 
     if mask.any():
         update_sheet(worksheet, df.loc[~mask].reset_index(drop=True))
+
+
+# =========================================================
+# 학반별 작성일 / Gemini OCR
+# =========================================================
+def ensure_schedule_sheet() -> None:
+    """교사가 일정 설정 메뉴를 열었을 때만 Schedules 탭을 필요 시 생성합니다."""
+    conn = get_connection()
+    try:
+        conn.read(worksheet="Schedules", ttl=1, nrows=1)
+    except Exception:
+        conn.create(
+            worksheet="Schedules",
+            data=make_empty_df(SHEET_CONFIG["Schedules"]),
+        )
+
+
+def get_schedules(class_code: Optional[str] = None) -> pd.DataFrame:
+    try:
+        df = read_sheet("Schedules").copy()
+    except Exception:
+        return make_empty_df(SHEET_CONFIG["Schedules"])
+
+    if df.empty:
+        return df
+
+    df["학반"] = df["학반"].map(normalize_text)
+    df["차시"] = df["차시"].map(safe_int)
+    df["작성일"] = df["작성일"].map(normalize_text)
+
+    if class_code:
+        df = df[df["학반"] == class_code].copy()
+    return df
+
+
+def get_allowed_date(class_code: str, session_no: int) -> Optional[date]:
+    schedules = get_schedules(class_code)
+    if schedules.empty:
+        return None
+
+    rows = schedules[schedules["차시"] == int(session_no)]
+    if rows.empty:
+        return None
+
+    raw = normalize_text(rows.iloc[-1]["작성일"])
+    if not raw:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def class_schedule_map(class_code: str, total_sessions: int) -> Dict[int, Optional[date]]:
+    return {
+        session_no: get_allowed_date(class_code, session_no)
+        for session_no in range(1, total_sessions + 1)
+    }
+
+
+def render_schedule_summary(class_code: str, total_sessions: int) -> None:
+    mapping = class_schedule_map(class_code, total_sessions)
+    rows = []
+    for session_no in range(1, total_sessions + 1):
+        scheduled = mapping.get(session_no)
+        rows.append(
+            {
+                "차시": f"{session_no}차시",
+                "작성 가능일": scheduled.strftime("%Y-%m-%d") if scheduled else "미지정",
+                "상태": "📅 지정" if scheduled else "🔒 잠금",
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def extract_page_range(page_range: str) -> tuple[int, int] | None:
+    match = re.fullmatch(
+        r"\s*(\d+)\s*[~\-–—]\s*(\d+)\s*p?\s*",
+        normalize_text(page_range),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    start_page = int(match.group(1))
+    end_page = int(match.group(2))
+    if start_page < 1 or end_page < start_page:
+        return None
+    return start_page, end_page
+
+
+def run_gemini_ocr(image_bytes: bytes, mime_type: str) -> Dict[str, str]:
+    """
+    Gemini 멀티모달 모델로 종이 독서활동지의 손글씨/인쇄 문항을 읽어
+    앱 입력 필드에 대응되는 JSON으로 추출합니다.
+    """
+    if genai is None or types is None:
+        raise RuntimeError(
+            "google-genai 패키지가 설치되어 있지 않습니다. requirements.txt를 확인하세요."
+        )
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "Gemini API 키가 없습니다. Streamlit Secrets에 "
+            "[gemini] api_key를 설정하세요."
+        )
+
+    if len(image_bytes) > 18 * 1024 * 1024:
+        raise RuntimeError("사진 파일이 너무 큽니다. 18MB 이하의 JPG/PNG 사진을 사용하세요.")
+
+    client = genai.Client(api_key=api_key)
+    prompt = """
+당신은 중학교 독서활동지 OCR 도우미입니다.
+첨부된 종이 독서활동지 사진에서 학생이 실제로 작성한 내용을 읽어
+아래 JSON 필드에 정확히 옮겨 적으세요.
+
+중요 규칙:
+1. 학생의 글을 요약하거나 새로 작성하지 말고, 읽을 수 있는 범위에서 가능한 한 원문 그대로 전사하세요.
+2. 손글씨가 불명확하면 추측하지 말고 해당 필드를 빈 문자열로 두세요.
+3. 인쇄된 안내문/문항 제목은 결과에 포함하지 마세요.
+4. 책 제목, 작가, 페이지 범위도 학생이 적은 값을 그대로 전사하세요.
+5. 페이지 범위는 예: "12~35p"처럼 문자열로 반환하세요.
+6. 결과는 반드시 지정한 JSON 스키마에 맞춰 반환하세요.
+"""
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    response = client.models.generate_content(
+        model=get_gemini_model(),
+        contents=[
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            prompt,
+        ],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=OCR_SCHEMA,
+            temperature=0,
+        ),
+    )
+
+    raw = getattr(response, "text", None)
+    if not raw:
+        raise RuntimeError("Gemini에서 OCR 결과를 받지 못했습니다.")
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Gemini OCR 결과를 JSON으로 해석하지 못했습니다.") from error
+
+    return {
+        "book_title": normalize_text(parsed.get("book_title", "")),
+        "author": normalize_text(parsed.get("author", "")),
+        "page_range": normalize_text(parsed.get("page_range", "")),
+        "summary": normalize_text(parsed.get("summary", "")),
+        "quote": normalize_text(parsed.get("quote", "")),
+        "question": normalize_text(parsed.get("question", "")),
+        "answer": normalize_text(parsed.get("answer", "")),
+        "thoughts": normalize_text(parsed.get("thoughts", "")),
+    }
+
+
+def render_ocr_panel(
+    student_id: str,
+    selected_session: int,
+) -> None:
+    st.markdown("### ✨ 종이 활동지 자동 입력 (Gemini OCR)")
+    st.caption(
+        "종이에 직접 작성한 독서활동지를 사진으로 찍어 올리면 "
+        "Gemini가 책 제목·페이지·요약·질문·느낀점을 읽어 입력칸에 넣어 줍니다. "
+        "AI가 읽은 결과는 반드시 확인·수정한 뒤 저장하세요."
+    )
+    st.info(
+        "주의: 사진은 Gemini API로 전송됩니다. 학생 이름·연락처 등 불필요한 개인정보가 "
+        "사진에 함께 들어가지 않도록 주의하세요."
+    )
+
+    upload_col, camera_col = st.columns(2)
+    with upload_col:
+        uploaded = st.file_uploader(
+            "활동지 사진 업로드",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=f"ocr_upload_{student_id}_{selected_session}",
+        )
+    with camera_col:
+        camera_image = st.camera_input(
+            "또는 카메라로 촬영",
+            key=f"ocr_camera_{student_id}_{selected_session}",
+        )
+
+    image_file = camera_image or uploaded
+
+    if image_file is None:
+        return
+
+    st.image(image_file, caption="OCR에 사용할 활동지", use_container_width=True)
+
+    if st.button(
+        "Gemini로 읽어서 입력칸 채우기 ✨",
+        use_container_width=True,
+        key=f"ocr_button_{student_id}_{selected_session}",
+    ):
+        try:
+            with st.spinner("활동지의 글씨를 읽는 중입니다…"):
+                result = run_gemini_ocr(
+                    image_file.getvalue(),
+                    image_file.type or "image/jpeg",
+                )
+            st.session_state["ocr_result"] = result
+            st.session_state["ocr_session"] = selected_session
+            st.success("OCR이 완료되었습니다. 아래 입력칸의 내용을 확인해 주세요.")
+            st.rerun()
+        except Exception as error:
+            st.error(f"Gemini OCR 처리 중 오류가 발생했습니다: {error}")
 
 
 # =========================================================
@@ -883,12 +1190,14 @@ def logout() -> None:
 
 
 def render_student_profile(student_id: str, student_name: str) -> None:
+    class_code = student_to_class_code(student_id)
+    class_text = format_class_code(class_code) if class_code else "학반 미확인"
     st.markdown(
         f"""
         <div class="profile-card">
             <div class="profile-name">👋 {student_name} 학생</div>
-            <div class="profile-sub">학번 {student_id} · 중학교 독서 포트폴리오</div>
-            <div class="profile-sub" style="margin-top:.35rem;">선택한 메뉴의 데이터만 불러옵니다.</div>
+            <div class="profile-sub">학번 {student_id} · {class_text} · 중학교 독서 포트폴리오</div>
+            <div class="profile-sub" style="margin-top:.35rem;">차시별 작성 가능일은 학반별로 교사가 지정합니다.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -960,34 +1269,128 @@ def render_books_tab(student_id: str) -> None:
             st.rerun()
 
 
+def render_log_readonly(row: Optional[pd.Series]) -> None:
+    if row is None:
+        st.info("아직 이 차시의 기록이 없습니다.")
+        return
+
+    reflection = parse_reflection(row["요약및느낀점"])
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="section-title">기록된 내용</div>
+            <div><b>책 제목:</b> {normalize_text(reflection.get("book_title", ""))}</div>
+            <div><b>작가:</b> {normalize_text(reflection.get("author", ""))}</div>
+            <div><b>페이지:</b> {safe_int(row["시작페이지"])}~{safe_int(row["끝페이지"])}p</div>
+            <div><b>독서 시간:</b> {safe_int(row["독서시간(분)"])}분</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="card" style="margin-top:.7rem;">{reflection_html(row["요약및느낀점"])}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_log_tab(student_id: str, total_sessions: int) -> None:
     st.markdown('<div class="section-title">차시별 독서 누가기록</div>', unsafe_allow_html=True)
-    st.caption("한 차시의 기록은 아래 독서 질문에 따라 작성합니다. 저장하면 다음에 다시 열었을 때 내용이 자동으로 복원됩니다.")
 
     books = get_student_books_cached(student_id)
     if books.empty:
         st.warning("먼저 '선택 도서 등록'에서 이번 학기 책을 등록해 주세요.")
         return
 
+    class_code = student_to_class_code(student_id)
+    if not class_code:
+        st.error("학번에서 학반 정보를 확인할 수 없습니다.")
+        return
+
+    schedule_map = class_schedule_map(class_code, total_sessions)
     logs = get_logs(student_id)
     existing_by_session = {}
     if not logs.empty:
         for _, row in logs.iterrows():
             existing_by_session[safe_int(row["차시"])] = row
 
+    def session_label(session_no: int) -> str:
+        allowed = schedule_map.get(session_no)
+        existing = existing_by_session.get(session_no)
+        if allowed:
+            if allowed == today_kst():
+                state = "🟢 오늘 작성 가능"
+            elif allowed > today_kst():
+                state = f"🟡 {allowed.strftime('%m/%d')} 예정"
+            else:
+                state = f"🔒 {allowed.strftime('%m/%d')} 종료"
+        else:
+            state = "⚪ 날짜 미지정"
+        if existing is not None:
+            state += " · 기록 있음"
+        return f"{session_no}차시 · {state}"
+
+    today_sessions = [
+        s for s in range(1, total_sessions + 1)
+        if schedule_map.get(s) == today_kst()
+    ]
+    default_index = (
+        today_sessions[0] - 1
+        if today_sessions
+        else 0
+    )
+
     selected_session = st.selectbox(
-        "기록할 차시",
+        "작성할 차시",
         list(range(1, total_sessions + 1)),
-        format_func=lambda x: f"{x}차시",
+        index=default_index,
+        format_func=session_label,
         key="log_session_selector",
     )
+
+    allowed_date = schedule_map.get(selected_session)
     row = existing_by_session.get(selected_session)
-    reflection = parse_reflection(row["요약및느낀점"]) if row is not None else {}
+
+    if allowed_date is None:
+        st.error(
+            f"{class_code}반의 {selected_session}차시 작성일이 아직 지정되지 않았습니다. "
+            "교사가 작성 가능일을 먼저 설정해야 합니다."
+        )
+        render_log_readonly(row)
+        return
+
+    if allowed_date != today_kst():
+        if allowed_date > today_kst():
+            st.warning(
+                f"{selected_session}차시는 **{allowed_date.strftime('%Y년 %m월 %d일')}**에만 작성·수정할 수 있습니다. "
+                "오늘은 아직 작성할 수 없습니다."
+            )
+        else:
+            st.warning(
+                f"{selected_session}차시의 작성일은 **{allowed_date.strftime('%Y년 %m월 %d일')}**이었습니다. "
+                "작성·수정은 잠금 상태입니다."
+            )
+        render_log_readonly(row)
+        return
 
     if row is not None:
-        st.info(f"{selected_session}차시 기존 기록을 불러왔습니다. 수정 후 저장하면 업데이트됩니다.")
+        st.info(
+            f"{selected_session}차시는 오늘이 작성 가능일입니다. "
+            "기존 기록을 불러와 수정할 수 있습니다."
+        )
 
-    # 학생이 등록한 도서 중 현재 기록의 도서를 선택할 수 있도록 합니다.
+    # 오늘 작성 가능한 차시에서만 OCR과 입력폼을 노출합니다.
+    ocr_state = st.session_state.get("ocr_result")
+    ocr_session = st.session_state.get("ocr_session")
+    if ocr_session != selected_session:
+        ocr_state = None
+
+    render_ocr_panel(student_id, selected_session)
+
+    # OCR 결과가 방금 생성된 경우 새로 만든 결과를 사용합니다.
+    ocr_state = st.session_state.get("ocr_result") if st.session_state.get("ocr_session") == selected_session else None
+
+    reflection = parse_reflection(row["요약및느낀점"]) if row is not None else {}
+
     book_records = books.sort_values("도서번호").to_dict("records")
     if len(book_records) == 1:
         selected_book = book_records[0]
@@ -1000,52 +1403,72 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
             "이번 기록의 도서",
             list(range(len(book_records))),
             format_func=lambda i: book_labels[i],
-            key=f"log_book_selector_{selected_session}",
+            key=f"log_book_selector_{student_id}_{selected_session}",
         )
         selected_book = book_records[selected_book_index]
 
-    default_title = reflection.get("book_title") or normalize_text(selected_book["도서명"])
-    default_author = reflection.get("author") or normalize_text(selected_book["저자"])
+    default_title = (
+        (ocr_state or {}).get("book_title")
+        or reflection.get("book_title")
+        or normalize_text(selected_book["도서명"])
+    )
+    default_author = (
+        (ocr_state or {}).get("author")
+        or reflection.get("author")
+        or normalize_text(selected_book["저자"])
+    )
 
-    with st.form("reading_log_form"):
+    if ocr_state and not row:
+        st.success("✨ Gemini OCR 결과가 입력칸에 반영되었습니다. 내용을 검토한 후 저장하세요.")
+
+    with st.form(f"reading_log_form_{student_id}_{selected_session}"):
         c1, c2 = st.columns(2)
         with c1:
             book_title = st.text_input(
                 "책 제목 *",
                 value=default_title,
                 placeholder="예: 아몬드",
+                key=f"log_title_{student_id}_{selected_session}",
             )
         with c2:
             c_start = safe_int(row["시작페이지"], 1) if row is not None else 1
             c_end = safe_int(row["끝페이지"], 1) if row is not None else 1
+            default_page_range = (
+                (ocr_state or {}).get("page_range")
+                or (f"{c_start}~{c_end}p" if row is not None else "")
+            )
             page_range = st.text_input(
                 "오늘 읽은 페이지 범위 (예: 12~35p) *",
-                value=f"{c_start}~{c_end}p" if row is not None else "",
+                value=default_page_range,
                 placeholder="예: 12~35p",
+                key=f"log_range_{student_id}_{selected_session}",
             )
 
         author = st.text_input(
             "작가 이름 *",
             value=default_author,
             placeholder="예: 손원평",
+            key=f"log_author_{student_id}_{selected_session}",
         )
 
         st.markdown("### 1. 오늘 읽은 내용 짧은 요약 (핵심 줄거리) *")
         summary = st.text_area(
             "요약",
-            value=reflection.get("summary", ""),
+            value=(ocr_state or {}).get("summary") or reflection.get("summary", ""),
             height=120,
             placeholder="오늘 읽은 부분에서 어떤 일이 있었는지 핵심 내용만 짧게 정리해 보세요.",
             label_visibility="collapsed",
+            key=f"log_summary_{student_id}_{selected_session}",
         )
 
         st.markdown("### 2. 가장 인상 깊은 문장과 이유")
         quote = st.text_area(
             "인상 깊은 문장과 이유",
-            value=reflection.get("quote", ""),
+            value=(ocr_state or {}).get("quote") or reflection.get("quote", ""),
             height=105,
             placeholder="기억에 남은 문장이나 장면을 적고, 왜 인상 깊었는지 써 보세요.",
             label_visibility="collapsed",
+            key=f"log_quote_{student_id}_{selected_session}",
         )
 
         st.markdown("### 3. 읽은 내용을 바탕으로 만든 질문과 답변")
@@ -1054,52 +1477,47 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
             st.markdown("**3-1. 나의 질문**")
             question = st.text_area(
                 "나의 질문",
-                value=reflection.get("question", ""),
+                value=(ocr_state or {}).get("question") or reflection.get("question", ""),
                 height=110,
                 placeholder="예: 주인공은 왜 그런 선택을 했을까?",
                 label_visibility="collapsed",
+                key=f"log_question_{student_id}_{selected_session}",
             )
         with q2:
             st.markdown("**3-2. 질문에 대한 나의 생각/답변**")
             answer = st.text_area(
                 "질문에 대한 나의 생각/답변",
-                value=reflection.get("answer", ""),
+                value=(ocr_state or {}).get("answer") or reflection.get("answer", ""),
                 height=110,
                 placeholder="예: 자신이 중요하게 생각하는 가치를 지키기 위해서였을 것이다.",
                 label_visibility="collapsed",
+                key=f"log_answer_{student_id}_{selected_session}",
             )
 
         st.markdown("### 4. 나의 생각과 느낌 (느낀점/깨달은점) *")
         thoughts = st.text_area(
             "나의 생각과 느낌",
-            value=reflection.get("thoughts", ""),
+            value=(ocr_state or {}).get("thoughts") or reflection.get("thoughts", ""),
             height=140,
             placeholder="책을 읽고 새롭게 생각하게 된 점, 느낀 점, 깨달은 점 등을 자유롭게 써 보세요.",
             label_visibility="collapsed",
+            key=f"log_thoughts_{student_id}_{selected_session}",
         )
 
         st.markdown("###")
-        log_date = st.date_input(
-            "읽은 날짜",
-            value=(
-                pd.to_datetime(row["날짜"]).date()
-                if row is not None and normalize_text(row["날짜"])
-                else date.today()
-            ),
+        st.info(
+            f"오늘의 작성 가능일: **{allowed_date.strftime('%Y-%m-%d')}** · "
+            "날짜는 교사가 지정한 날로 자동 기록됩니다."
         )
 
-        c3, c4 = st.columns(2)
-        with c3:
-            minutes = st.number_input(
-                "독서 시간(분)",
-                min_value=0,
-                max_value=1440,
-                value=max(0, safe_int(row["독서시간(분)"])) if row is not None else 0,
-                step=5,
-            )
-        with c4:
-            st.markdown("**페이지 범위 안내**")
-            st.caption("예: 12~35p → 읽은 페이지 24쪽으로 자동 계산")
+        minutes = st.number_input(
+            "독서 시간(분)",
+            min_value=0,
+            max_value=1440,
+            value=max(0, safe_int(row["독서시간(분)"])) if row is not None else 0,
+            step=5,
+            key=f"log_minutes_{student_id}_{selected_session}",
+        )
 
         submitted = st.form_submit_button(
             "독서 기록 저장하기",
@@ -1107,17 +1525,17 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
         )
 
     if submitted:
-        import re
-        page_match = re.fullmatch(r"\s*(\d+)\s*[~\-–—]\s*(\d+)\s*p?\s*", page_range, re.IGNORECASE)
-        if not page_match:
+        # UI 잠금과 별개로 서버측에서도 작성 가능일을 재검증합니다.
+        if allowed_date != today_kst():
+            st.error("오늘은 이 차시의 기록 작성/수정 가능일이 아닙니다.")
+            return
+
+        page_pair = extract_page_range(page_range)
+        if not page_pair:
             st.error("페이지 범위를 `12~35p`와 같은 형식으로 입력해 주세요.")
             return
 
-        start_page = int(page_match.group(1))
-        end_page = int(page_match.group(2))
-        if start_page < 1 or end_page < start_page:
-            st.error("페이지 범위를 확인해 주세요. 끝 페이지는 시작 페이지보다 크거나 같아야 합니다.")
-            return
+        start_page, end_page = page_pair
         if not book_title.strip() or not author.strip():
             st.error("책 제목과 작가 이름을 입력해 주세요.")
             return
@@ -1144,7 +1562,7 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
             {
                 "학번": student_id,
                 "차시": selected_session,
-                "날짜": log_date.strftime("%Y-%m-%d"),
+                "날짜": allowed_date.strftime("%Y-%m-%d"),
                 "시작페이지": start_page,
                 "끝페이지": end_page,
                 "읽은페이지수": pages_read,
@@ -1153,24 +1571,36 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
             },
             ["학번", "차시"],
         )
+        st.session_state["ocr_result"] = None
+        st.session_state["ocr_session"] = None
         st.success(
             f"{selected_session}차시 기록이 저장되었습니다. 읽은 페이지 {pages_read}쪽"
         )
         st.rerun()
 
     st.markdown("### 차시 진행 상태")
-    statuses = sessions_status(student_id, total_sessions)
     rows = []
-    for item in statuses:
+    for session_no in range(1, total_sessions + 1):
+        allowed = schedule_map.get(session_no)
+        existing = existing_by_session.get(session_no)
+        status = "미지정"
+        if allowed:
+            if allowed == today_kst():
+                status = "🟢 오늘 작성 가능"
+            elif allowed > today_kst():
+                status = f"🟡 {allowed.strftime('%m/%d')} 예정"
+            else:
+                status = "🔒 작성 종료"
         rows.append(
             {
-                "차시": f"{item['차시']}차시",
-                "기록상태": "✅ 작성" if item["작성"] else "⬜ 미작성",
-                "읽은 페이지": item["읽은페이지수"],
-                "독서 시간(분)": item["독서시간"],
+                "차시": f"{session_no}차시",
+                "작성 가능일": allowed.strftime("%Y-%m-%d") if allowed else "미지정",
+                "상태": status,
+                "기록": "✅ 작성됨" if existing is not None else "⬜ 미작성",
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
 
 
 def render_stats_tab(student_id: str, total_sessions: int) -> None:
@@ -1455,6 +1885,100 @@ def render_teacher_settings() -> None:
         st.success(f"총 차시 수가 {new_total}차시로 저장되었습니다.")
         st.rerun()
 
+    st.markdown("###")
+    st.markdown('<div class="section-title">📅 학반별 차시 작성 날짜 설정</div>', unsafe_allow_html=True)
+    st.caption(
+        "학생은 자기 학반에 설정된 날짜와 오늘 날짜가 일치할 때만 해당 차시를 작성하거나 수정할 수 있습니다. "
+        "미래 날짜·지난 날짜·미지정 차시는 잠금됩니다."
+    )
+
+    try:
+        ensure_schedule_sheet()
+    except Exception as error:
+        st.error(
+            "Schedules 탭을 생성하지 못했습니다. 서비스 계정이 해당 Google Sheet에 "
+            "편집자(Editor) 권한인지 확인하세요."
+        )
+        st.code(str(error))
+        return
+
+    g1, g2 = st.columns(2)
+    with g1:
+        grade = st.selectbox("학년", [1, 2, 3], index=1, key="schedule_grade")
+    with g2:
+        class_no = st.selectbox("반", list(range(1, 13)), index=2, key="schedule_class")
+
+    class_code = f"{grade}-{class_no:02d}"
+    st.info(f"현재 설정 대상: **{format_class_code(class_code)}**")
+
+    schedules = get_schedules(class_code)
+    existing_map: Dict[int, date] = {}
+    if not schedules.empty:
+        for _, row in schedules.iterrows():
+            d = normalize_text(row["작성일"])
+            try:
+                parsed = datetime.strptime(d, "%Y-%m-%d").date()
+                existing_map[safe_int(row["차시"])] = parsed
+            except ValueError:
+                pass
+
+    with st.form(f"schedule_form_{class_code}_{current}"):
+        schedule_rows = []
+        for session_no in range(1, current + 1):
+            c1, c2 = st.columns([1, 2])
+            existing_date = existing_map.get(session_no)
+            with c1:
+                enabled = st.checkbox(
+                    f"{session_no}차시 지정",
+                    value=existing_date is not None,
+                    key=f"schedule_enabled_{class_code}_{session_no}",
+                )
+            with c2:
+                selected_date = st.date_input(
+                    f"{session_no}차시 작성일",
+                    value=existing_date or today_kst(),
+                    disabled=not enabled,
+                    key=f"schedule_date_{class_code}_{session_no}",
+                )
+            schedule_rows.append((session_no, enabled, selected_date))
+
+        submitted = st.form_submit_button(
+            f"{format_class_code(class_code)} 작성 날짜 저장",
+            use_container_width=True,
+        )
+
+    if submitted:
+        all_schedules = get_schedules()
+        if not all_schedules.empty:
+            all_schedules = all_schedules[
+                all_schedules["학반"] != class_code
+            ].copy()
+
+        new_rows = []
+        for session_no, enabled, selected_date in schedule_rows:
+            if enabled:
+                new_rows.append(
+                    {
+                        "학반": class_code,
+                        "차시": session_no,
+                        "작성일": selected_date.strftime("%Y-%m-%d"),
+                    }
+                )
+
+        if new_rows:
+            all_schedules = pd.concat(
+                [all_schedules, pd.DataFrame(new_rows)],
+                ignore_index=True,
+            )
+
+        update_sheet("Schedules", all_schedules)
+        st.success(f"{format_class_code(class_code)}의 차시 작성 날짜가 저장되었습니다.")
+        st.rerun()
+
+    st.markdown("### 현재 설정 요약")
+    render_schedule_summary(class_code, current)
+
+
 
 def render_teacher_student_list(total_sessions: int) -> Optional[str]:
     st.markdown('<div class="section-title">👥 학생 목록 조회</div>', unsafe_allow_html=True)
@@ -1648,7 +2172,7 @@ def render_teacher_page() -> None:
         if st.button("로그아웃", use_container_width=True):
             logout()
 
-    sections = ["시스템 설정", "학생 목록", "누가기록·채점"]
+    sections = ["학기·작성일 설정", "학생 목록", "누가기록·채점"]
     current = st.session_state.get("teacher_section", sections[0])
     if current not in sections:
         current = sections[0]
@@ -1662,7 +2186,7 @@ def render_teacher_page() -> None:
     )
     st.session_state["teacher_section"] = selected
 
-    if selected == "시스템 설정":
+    if selected == "학기·작성일 설정":
         render_teacher_settings()
         return
 
