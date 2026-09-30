@@ -75,6 +75,9 @@ if "selected_student" not in st.session_state:
 if "show_add_record" not in st.session_state:
     st.session_state.show_add_record = False
 
+if "show_book_editor" not in st.session_state:
+    st.session_state.show_book_editor = False
+
 # ------------------------------------------------------------
 # 디자인 CSS
 # ------------------------------------------------------------
@@ -435,15 +438,34 @@ def page_title(title, subtitle, teacher=False):
 
 
 def switch_buttons():
-    c1, c2, c3 = st.columns([1, 1, 6])
-    with c1:
-        if st.button("학생 화면", use_container_width=True):
-            st.session_state.screen = "student"
-            st.rerun()
-    with c2:
-        if st.button("교사 관리자", use_container_width=True):
-            st.session_state.screen = "teacher"
-            st.rerun()
+    """
+    화면 전환.
+    학생 화면에서는 교사 관리자 버튼을 표시하지 않고,
+    교사 화면에서는 학생 화면으로 돌아가는 버튼만 표시합니다.
+    교사 화면은 주소에 ?mode=teacher 를 붙여 직접 열 수 있습니다.
+    """
+    try:
+        url_mode = st.query_params.get("mode")
+    except Exception:
+        url_mode = None
+
+    if url_mode in ("student", "teacher"):
+        st.session_state.screen = url_mode
+
+    if st.session_state.screen == "teacher":
+        c1, c2, c3 = st.columns([1.3, 1.3, 6])
+        with c1:
+            if st.button("학생 화면", key="go_student_top", use_container_width=True):
+                st.session_state.screen = "student"
+                st.query_params["mode"] = "student"
+                st.rerun()
+        with c2:
+            st.button(
+                "교사 관리자",
+                key="current_teacher_top",
+                use_container_width=True,
+                disabled=True,
+            )
 
 
 # ------------------------------------------------------------
@@ -479,7 +501,6 @@ def student_screen():
                             </div>
                         </div>
                     </div>
-                    <div class="muted">✎ 도서 변경 / 등록</div>
                 </div>
                 <hr>
                 <div class="section-title">⌁ 1학기 독서 포트폴리오 달성도 (15~17차시 기준)</div>
@@ -492,6 +513,90 @@ def student_screen():
             """,
             unsafe_allow_html=True,
         )
+
+
+        bcol1, bcol2 = st.columns([1.5, 4])
+        with bcol1:
+            if st.button(
+                "✎ 도서 변경 / 등록",
+                key="open_book_editor",
+                use_container_width=True,
+            ):
+                st.session_state.show_book_editor = not st.session_state.show_book_editor
+
+        if st.session_state.show_book_editor:
+            with st.form("book_editor_form"):
+                st.markdown("#### 이번 학기 선택 도서 등록")
+                st.caption("최대 2권까지 등록할 수 있습니다.")
+
+                def split_book(book_text):
+                    if " (" in book_text and book_text.endswith(")"):
+                        title, author = book_text.rsplit(" (", 1)
+                        return title, author[:-1]
+                    return book_text, ""
+
+                b1_title, b1_author = (
+                    split_book(student["도서"][0])
+                    if student["도서"] else ("", "")
+                )
+                b2_title, b2_author = (
+                    split_book(student["도서"][1])
+                    if len(student["도서"]) > 1 else ("", "")
+                )
+
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    title1 = st.text_input(
+                        "1권 제목",
+                        value=b1_title,
+                        placeholder="예: 아몬드",
+                    )
+                    author1 = st.text_input(
+                        "1권 작가",
+                        value=b1_author,
+                        placeholder="예: 손원평",
+                    )
+                with ec2:
+                    title2 = st.text_input(
+                        "2권 제목 (선택)",
+                        value=b2_title,
+                        placeholder="선택 입력",
+                    )
+                    author2 = st.text_input(
+                        "2권 작가 (선택)",
+                        value=b2_author,
+                        placeholder="선택 입력",
+                    )
+
+                save_book = st.form_submit_button(
+                    "도서 저장",
+                    use_container_width=True,
+                )
+
+                if save_book:
+                    new_books = []
+
+                    if title1.strip():
+                        new_books.append(
+                            f"{title1.strip()} ({author1.strip()})"
+                            if author1.strip()
+                            else title1.strip()
+                        )
+
+                    if title2.strip():
+                        new_books.append(
+                            f"{title2.strip()} ({author2.strip()})"
+                            if author2.strip()
+                            else title2.strip()
+                        )
+
+                    if not new_books:
+                        st.error("최소 1권의 도서 제목을 입력해 주세요.")
+                    else:
+                        student["도서"] = new_books[:2]
+                        st.session_state.show_book_editor = False
+                        st.success("선택 도서가 저장되었습니다.")
+                        st.rerun()
 
     with c2:
         st.markdown(
