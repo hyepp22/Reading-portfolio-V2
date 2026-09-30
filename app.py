@@ -62,17 +62,64 @@ def init_session_state() -> None:
             st.session_state[key] = value
 
 
-@st.cache_resource
+def _get_secret_mapping() -> dict:
+    """서비스 계정 설정을 여러 Secrets 입력 형태에서 읽습니다.
+
+    지원 형태:
+    1) [connections.gsheets] 아래에 credential 값을 넣은 형태
+    2) 최상위에 credential 값을 넣은 형태
+    3) [gsheets] 아래에 credential 값을 넣은 형태
+    """
+    required_keys = [
+        "type",
+        "project_id",
+        "private_key_id",
+        "private_key",
+        "client_email",
+        "client_id",
+        "auth_uri",
+        "token_uri",
+        "auth_provider_x509_cert_url",
+        "client_x509_cert_url",
+    ]
+
+    # Streamlit Cloud / 로컬의 st.secrets는 mapping처럼 접근할 수 있습니다.
+    try:
+        secrets_dict = st.secrets.to_dict()
+    except Exception:
+        secrets_dict = dict(st.secrets)
+
+    candidates = []
+
+    connections = secrets_dict.get("connections")
+    if isinstance(connections, dict):
+        gsheets = connections.get("gsheets")
+        if isinstance(gsheets, dict):
+            candidates.append(gsheets)
+
+    gsheets_top = secrets_dict.get("gsheets")
+    if isinstance(gsheets_top, dict):
+        candidates.append(gsheets_top)
+
+    # 마지막으로 최상위에 직접 넣은 경우.
+    candidates.append(secrets_dict)
+
+    for candidate in candidates:
+        config = {
+            key: candidate.get(key)
+            for key in required_keys
+            if key in candidate
+        }
+        if config:
+            # 최소 한 개 이상의 인증 키를 찾은 후보를 반환
+            return config
+
+    return {}
+
+
 def get_gspread_client():
     """secrets.toml의 서비스 계정 인증정보로 gspread 클라이언트를 생성합니다."""
-    try:
-        # [connections.gsheets] 아래에 있는 서비스 계정 정보만 사용합니다.
-        # spreadsheet URL은 보안정보가 아니므로 app.py의 GOOGLE_SHEET_URL에 고정합니다.
-        config = dict(st.secrets["connections"]["gsheets"])
-    except Exception as error:
-        raise RuntimeError(
-            "secrets.toml의 [connections.gsheets] 설정을 찾을 수 없습니다."
-        ) from error
+    config = _get_secret_mapping()
 
     required_keys = [
         "type",
@@ -91,20 +138,38 @@ def get_gspread_client():
     if missing:
         raise RuntimeError(
             "서비스 계정 인증정보가 부족합니다. 누락된 항목: " + ", ".join(missing)
+            + "\n\n"
+            "secrets.toml 형식은 [connections.gsheets] 아래에 넣거나 "
+            "최상위에 직접 넣을 수 있습니다."
         )
 
     if normalize_text(config.get("type")) != "service_account":
         raise RuntimeError(
-            "[connections.gsheets]의 type은 service_account여야 합니다."
+            "서비스 계정 JSON의 type 값은 'service_account'여야 합니다."
         )
 
-    credentials_info = {key: config[key] for key in required_keys if key != "type"}
+    credentials_info = {
+        key: config[key]
+        for key in required_keys
+        if key != "type"
+    }
     credentials_info["type"] = "service_account"
 
-    return gspread.service_account_from_dict(credentials_info)
+    # gspread의 service_account_from_dict보다 명시적인 google-auth 방식을 사용합니다.
+    # Google Sheets / Drive API 모두 사용할 수 있도록 scope을 지정합니다.
+    from google.oauth2.service_account import Credentials
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    credentials = Credentials.from_service_account_info(
+        credentials_info,
+        scopes=scopes,
+    )
+    return gspread.authorize(credentials)
 
 
-@st.cache_resource
 def get_spreadsheet():
     """Python 코드에 고정한 Google Sheet URL로 스프레드시트를 엽니다."""
     try:
@@ -188,6 +253,8 @@ def now_string() -> str:
 
 def get_teacher_password() -> str:
     try:
+        if "app" in st.secrets:
+            return normalize_text(st.secrets["app"].get("teacher_password", ""))
         return normalize_text(st.secrets.get("teacher_password", ""))
     except Exception:
         return ""
@@ -195,7 +262,10 @@ def get_teacher_password() -> str:
 
 def demo_enabled() -> bool:
     try:
-        value = st.secrets.get("enable_demo_accounts", True)
+        if "app" in st.secrets:
+            value = st.secrets["app"].get("enable_demo_accounts", True)
+        else:
+            value = st.secrets.get("enable_demo_accounts", True)
         if isinstance(value, bool):
             return value
         return normalize_text(value).lower() in {"1", "true", "yes", "on"}
@@ -1585,9 +1655,9 @@ def main() -> None:
         st.error("Google Sheets 연결 또는 worksheet 초기화에 실패했습니다.")
         st.code(str(error))
         st.info(
-            "Community Cloud에서는 App settings → Secrets에 "
-            "[connections.gsheets] 설정을 넣고, 해당 서비스 계정에 "
-            "스프레드시트 편집 권한(Editor)을 부여했는지 확인하세요."
+            "확인할 항목: Secrets의 서비스 계정 인증정보(type/project_id/private_key_id/private_key/client_email/client_id/auth_uri/token_uri/auth_provider_x509_cert_url/client_x509_cert_url), "
+            "그리고 client_email이 Google Sheet에서 편집자(Editor)로 공유되어 있는지 확인하세요. "
+            "시트 주소는 app.py에 고정되어 있습니다."
         )
         st.stop()
 
