@@ -164,6 +164,52 @@ def today_kst() -> date:
     return datetime.now(KST).date()
 
 
+def parse_sheet_date(value: Any) -> Optional[date]:
+    """Google Sheets가 반환하는 다양한 날짜 표현을 Python date로 변환."""
+    if value is None:
+        return None
+
+    # pandas Timestamp / datetime / date 직접 처리
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.to_pydatetime().date()
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    raw = normalize_text(value)
+    if not raw:
+        return None
+
+    # 가장 흔한 날짜/날짜시간 형식
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y.%m.%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y.%m.%d %H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+
+    # Google Sheets / pandas의 다른 날짜 표현까지 보조 처리
+    try:
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if pd.notna(parsed):
+            return parsed.to_pydatetime().date()
+    except Exception:
+        pass
+
+    return None
+
+
 def student_to_class_code(student_id: str) -> str:
     """20315 -> 2-03 (2학년 3반)."""
     sid = normalize_student_id(student_id)
@@ -413,16 +459,7 @@ def get_allowed_date(class_code: str, session_no: int) -> Optional[date]:
     if rows.empty:
         return None
 
-    raw = normalize_text(rows.iloc[-1]["작성일"])
-    if not raw:
-        return None
-
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
-        try:
-            return datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None
+    return parse_sheet_date(rows.iloc[-1]["작성일"])
 
 
 def class_schedule_map(class_code: str, total_sessions: int) -> Dict[int, Optional[date]]:
@@ -1950,12 +1987,9 @@ def render_teacher_settings() -> None:
     existing_map: Dict[int, date] = {}
     if not schedules.empty:
         for _, row in schedules.iterrows():
-            d = normalize_text(row["작성일"])
-            try:
-                parsed = datetime.strptime(d, "%Y-%m-%d").date()
+            parsed = parse_sheet_date(row["작성일"])
+            if parsed:
                 existing_map[safe_int(row["차시"])] = parsed
-            except ValueError:
-                pass
 
     # 체크박스는 form 밖에 두어 클릭 즉시 화면이 다시 실행되도록 합니다.
     # 그래야 "지정"을 체크하는 순간 오른쪽 날짜 입력칸이 활성화됩니다.
