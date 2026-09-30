@@ -5,8 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import gspread
-from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
+from streamlit_gsheets import GSheetsConnection
 
 
 # =========================================================
@@ -15,8 +14,8 @@ from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 APP_TITLE = "중학교 독서 포트폴리오"
 APP_SUBTITLE = "15~17차시 한 학기 독서 누적 기록 & 수행평가 관리 시스템"
 
-# Google Sheet 문서 주소는 코드에 고정합니다.
-# 서비스 계정 인증정보(private_key 등)는 반드시 secrets.toml에 보관하세요.
+# Google Sheet 주소는 코드에 고정합니다.
+# 서비스 계정 인증정보(private_key 등)만 secrets.toml에 보관하세요.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1fB5c_VQequRNY7PsJ9dUwt3_jzsIJlhACPNRu5IkIEU/edit"
 
 SHEET_CONFIG = {
@@ -62,141 +61,12 @@ def init_session_state() -> None:
             st.session_state[key] = value
 
 
-def _get_secret_mapping() -> dict:
-    """서비스 계정 설정을 여러 Secrets 입력 형태에서 읽습니다.
-
-    지원 형태:
-    1) [connections.gsheets] 아래에 credential 값을 넣은 형태
-    2) 최상위에 credential 값을 넣은 형태
-    3) [gsheets] 아래에 credential 값을 넣은 형태
-    """
-    required_keys = [
-        "type",
-        "project_id",
-        "private_key_id",
-        "private_key",
-        "client_email",
-        "client_id",
-        "auth_uri",
-        "token_uri",
-        "auth_provider_x509_cert_url",
-        "client_x509_cert_url",
-    ]
-
-    # Streamlit Cloud / 로컬의 st.secrets는 mapping처럼 접근할 수 있습니다.
-    try:
-        secrets_dict = st.secrets.to_dict()
-    except Exception:
-        secrets_dict = dict(st.secrets)
-
-    candidates = []
-
-    connections = secrets_dict.get("connections")
-    if isinstance(connections, dict):
-        gsheets = connections.get("gsheets")
-        if isinstance(gsheets, dict):
-            candidates.append(gsheets)
-
-    gsheets_top = secrets_dict.get("gsheets")
-    if isinstance(gsheets_top, dict):
-        candidates.append(gsheets_top)
-
-    # 마지막으로 최상위에 직접 넣은 경우.
-    candidates.append(secrets_dict)
-
-    for candidate in candidates:
-        config = {
-            key: candidate.get(key)
-            for key in required_keys
-            if key in candidate
-        }
-        if config:
-            # 최소 한 개 이상의 인증 키를 찾은 후보를 반환
-            return config
-
-    return {}
-
-
-def get_gspread_client():
-    """secrets.toml의 서비스 계정 인증정보로 gspread 클라이언트를 생성합니다."""
-    config = _get_secret_mapping()
-
-    required_keys = [
-        "type",
-        "project_id",
-        "private_key_id",
-        "private_key",
-        "client_email",
-        "client_id",
-        "auth_uri",
-        "token_uri",
-        "auth_provider_x509_cert_url",
-        "client_x509_cert_url",
-    ]
-
-    missing = [key for key in required_keys if not normalize_text(config.get(key, ""))]
-    if missing:
-        raise RuntimeError(
-            "서비스 계정 인증정보가 부족합니다. 누락된 항목: " + ", ".join(missing)
-            + "\n\n"
-            "secrets.toml 형식은 [connections.gsheets] 아래에 넣거나 "
-            "최상위에 직접 넣을 수 있습니다."
-        )
-
-    if normalize_text(config.get("type")) != "service_account":
-        raise RuntimeError(
-            "서비스 계정 JSON의 type 값은 'service_account'여야 합니다."
-        )
-
-    credentials_info = {
-        key: config[key]
-        for key in required_keys
-        if key != "type"
-    }
-    credentials_info["type"] = "service_account"
-
-    # gspread의 service_account_from_dict보다 명시적인 google-auth 방식을 사용합니다.
-    # Google Sheets / Drive API 모두 사용할 수 있도록 scope을 지정합니다.
-    from google.oauth2.service_account import Credentials
-
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    credentials = Credentials.from_service_account_info(
-        credentials_info,
-        scopes=scopes,
-    )
-    return gspread.authorize(credentials)
-
-
-def get_spreadsheet():
-    """Python 코드에 고정한 Google Sheet URL로 스프레드시트를 엽니다."""
-    try:
-        return get_gspread_client().open_by_url(GOOGLE_SHEET_URL)
-    except SpreadsheetNotFound as error:
-        raise RuntimeError(
-            "Google Sheet를 찾을 수 없습니다. 서비스 계정 client_email이 "
-            "'독서 포트폴리오 테스트' 시트의 편집자로 공유되어 있는지 확인하세요."
-        ) from error
-    except Exception as error:
-        raise RuntimeError(f"Google Sheet 연결 실패: {error}") from error
-
-
-def get_worksheet(worksheet: str):
-    try:
-        return get_spreadsheet().worksheet(worksheet)
-    except WorksheetNotFound:
-        try:
-            return get_spreadsheet().add_worksheet(
-                title=worksheet,
-                rows=1000,
-                cols=max(8, len(SHEET_CONFIG[worksheet])),
-            )
-        except Exception as error:
-            raise RuntimeError(
-                f"'{worksheet}' worksheet를 생성할 수 없습니다: {error}"
-            ) from error
+def get_connection() -> GSheetsConnection:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    # GSheetsConnection은 인증정보를 secrets에서 읽되, 실제 Spreadsheet 주소는
+    # 코드에서 기본값으로 지정할 수 있습니다.
+    conn.set_default(GOOGLE_SHEET_URL)
+    return conn
 
 
 def normalize_text(value: Any) -> str:
@@ -253,19 +123,14 @@ def now_string() -> str:
 
 def get_teacher_password() -> str:
     try:
-        if "app" in st.secrets:
-            return normalize_text(st.secrets["app"].get("teacher_password", ""))
-        return normalize_text(st.secrets.get("teacher_password", ""))
+        return normalize_text(st.secrets["app"]["teacher_password"])
     except Exception:
         return ""
 
 
 def demo_enabled() -> bool:
     try:
-        if "app" in st.secrets:
-            value = st.secrets["app"].get("enable_demo_accounts", True)
-        else:
-            value = st.secrets.get("enable_demo_accounts", True)
+        value = st.secrets["app"].get("enable_demo_accounts", True)
         if isinstance(value, bool):
             return value
         return normalize_text(value).lower() in {"1", "true", "yes", "on"}
@@ -281,16 +146,12 @@ def make_empty_df(columns: Iterable[str]) -> pd.DataFrame:
 
 
 def read_sheet(worksheet: str) -> pd.DataFrame:
-    ws = get_worksheet(worksheet)
-    try:
-        records = ws.get_all_records(default_blank="")
-    except TypeError:
-        records = ws.get_all_records()
-
-    if not records:
+    conn = get_connection()
+    df = conn.read(worksheet=worksheet, ttl=0)
+    if df is None:
         return make_empty_df(SHEET_CONFIG[worksheet])
 
-    df = pd.DataFrame(records)
+    df = df.copy()
     expected = SHEET_CONFIG[worksheet]
     for col in expected:
         if col not in df.columns:
@@ -300,34 +161,28 @@ def read_sheet(worksheet: str) -> pd.DataFrame:
 
 def ensure_worksheets() -> None:
     """
-    CRUD를 위해 각 worksheet가 없으면 생성하고, 첫 행에 표준 헤더를 준비합니다.
-    이미 헤더가 있으면 데이터를 건드리지 않습니다.
+    CRUD를 위해 각 worksheet가 없으면 기본 헤더를 가진 worksheet를 생성.
+    처음 1회 실행 시에만 생성되고, 이미 존재하면 그대로 사용한다.
     """
-    spreadsheet = get_spreadsheet()
+    conn = get_connection()
 
     for worksheet, columns in SHEET_CONFIG.items():
         try:
-            ws = spreadsheet.worksheet(worksheet)
-        except WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(
-                title=worksheet,
-                rows=1000,
-                cols=max(8, len(columns)),
-            )
-
-        first_row = ws.row_values(1)
-        if not first_row:
-            ws.update("A1", [columns], raw=True)
-        else:
-            existing = [normalize_text(v) for v in first_row[: len(columns)]]
-            if existing != columns:
-                # 사용자가 이미 만든 탭의 헤더가 요구사항과 다를 때는 자동 덮어쓰지 않습니다.
-                # read_sheet()가 필요한 열을 보완할 수 있도록 그대로 둡니다.
-                pass
+            _ = conn.read(worksheet=worksheet, ttl=0)
+        except Exception:
+            try:
+                conn.create(
+                    worksheet=worksheet,
+                    data=make_empty_df(columns),
+                )
+            except Exception as create_error:
+                raise RuntimeError(
+                    f"'{worksheet}' 시트를 자동 생성할 수 없습니다: {create_error}"
+                ) from create_error
 
 
 def update_sheet(worksheet: str, df: pd.DataFrame) -> None:
-    ws = get_worksheet(worksheet)
+    conn = get_connection()
     expected = SHEET_CONFIG[worksheet]
     output = df.copy()
 
@@ -335,17 +190,9 @@ def update_sheet(worksheet: str, df: pd.DataFrame) -> None:
         if col not in output.columns:
             output[col] = ""
 
-    output = output[expected].copy()
-    output = output.where(pd.notna(output), "")
-
-    values = [expected]
-    if not output.empty:
-        values.extend(output.astype(object).values.tolist())
-
-    # 사용자가 원하는 시트 구조를 유지하면서 전체 데이터를 최신 상태로 갱신합니다.
-    ws.clear()
-    ws.update("A1", values, raw=True)
-    st.cache_resource.clear()
+    output = output[expected]
+    conn.update(worksheet=worksheet, data=output)
+    st.cache_data.clear()
 
 
 def append_row(worksheet: str, row: Dict[str, Any]) -> None:
@@ -1655,9 +1502,9 @@ def main() -> None:
         st.error("Google Sheets 연결 또는 worksheet 초기화에 실패했습니다.")
         st.code(str(error))
         st.info(
-            "확인할 항목: Secrets의 서비스 계정 인증정보(type/project_id/private_key_id/private_key/client_email/client_id/auth_uri/token_uri/auth_provider_x509_cert_url/client_x509_cert_url), "
-            "그리고 client_email이 Google Sheet에서 편집자(Editor)로 공유되어 있는지 확인하세요. "
-            "시트 주소는 app.py에 고정되어 있습니다."
+            "Community Cloud에서는 App settings → Secrets에 "
+            "[connections.gsheets] 설정을 넣고, 해당 서비스 계정에 "
+            "스프레드시트 편집 권한(Editor)을 부여했는지 확인하세요."
         )
         st.stop()
 
