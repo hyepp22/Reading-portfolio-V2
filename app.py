@@ -3,16 +3,14 @@ import streamlit as st
 from datetime import datetime
 
 # ============================================================
-# 중학교 15~17차시 독서 포트폴리오 수행평가 시스템
-# Streamlit UI prototype
-# - AI Studio 화면을 최대한 비슷하게 재현
-# - 실제 Google Sheets 연결 전에도 UI/기능을 테스트할 수 있도록 샘플 데이터 포함
+# 중학교 독서 포트폴리오 수행평가 시스템
+# Streamlit UI
 # ============================================================
 
 st.set_page_config(
-    page_title="독서 포트폴리오 수행평가 시스템",
+    page_title="중학교 독서 포트폴리오",
     page_icon="📖",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="collapsed",
 )
 
@@ -25,6 +23,7 @@ if "students" not in st.session_state:
             "학번": "10101",
             "반": "1-1",
             "이름": "박예빈",
+            "PIN": "1234",
             "도서": ["아몬드 (손원평)"],
             "완료차시": 0,
             "총독서": 0,
@@ -35,6 +34,7 @@ if "students" not in st.session_state:
             "학번": "10201",
             "반": "1-2",
             "이름": "박은혜",
+            "PIN": "1234",
             "도서": ["아몬드 (손원평)"],
             "완료차시": 0,
             "총독서": 0,
@@ -42,20 +42,22 @@ if "students" not in st.session_state:
             "채점": False,
         },
         {
-            "학번": "20308",
+            "학번": "20315",
             "반": "2-3",
-            "이름": "박도윤",
-            "도서": ["페인트 (이희영)", "체험하지 않는 마음 (김민정)"],
+            "이름": "김서연",
+            "PIN": "1234",
+            "도서": ["페인트 (이희영)"],
             "완료차시": 0,
             "총독서": 0,
             "점수": None,
             "채점": False,
         },
         {
-            "학번": "30112",
-            "반": "3-1",
-            "이름": "김서윤",
-            "도서": ["완득이 (김려령)"],
+            "학번": "20316",
+            "반": "2-3",
+            "이름": "최도윤",
+            "PIN": "1234",
+            "도서": ["체리새우: 비밀글입니다 (황영미)", "아몬드 (손원평)"],
             "완료차시": 0,
             "총독서": 0,
             "점수": None,
@@ -66,331 +68,381 @@ if "students" not in st.session_state:
 if "records" not in st.session_state:
     st.session_state.records = {}
 
-if "screen" not in st.session_state:
-    st.session_state.screen = "student"
+if "student_logged_in" not in st.session_state:
+    st.session_state.student_logged_in = False
 
-if "selected_student" not in st.session_state:
-    st.session_state.selected_student = "10101"
+if "teacher_logged_in" not in st.session_state:
+    st.session_state.teacher_logged_in = False
 
-if "show_add_record" not in st.session_state:
-    st.session_state.show_add_record = False
+if "current_student_id" not in st.session_state:
+    st.session_state.current_student_id = None
 
-if "show_book_editor" not in st.session_state:
-    st.session_state.show_book_editor = False
+if "page" not in st.session_state:
+    st.session_state.page = "student_login"
+
+if "teacher_password" not in st.session_state:
+    st.session_state.teacher_password = "1234"
+
+if "show_new_record" not in st.session_state:
+    st.session_state.show_new_record = False
 
 # ------------------------------------------------------------
-# 디자인 CSS
+# 전체 CSS
 # ------------------------------------------------------------
 st.markdown(
-    """
+    r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', sans-serif;
+:root{
+    --bg:#f6f8fc;
+    --navy:#0f172a;
+    --text:#172033;
+    --muted:#778397;
+    --line:#dce4ef;
+    --purple:#5138f5;
+    --purple2:#6046f5;
+    --green:#00a878;
 }
 
-.stApp {
-    background: #f7f9fc;
-    color: #172033;
+html, body, [class*="css"]{
+    font-family:'Noto Sans KR', sans-serif !important;
 }
 
-.block-container {
-    max-width: 1220px;
-    padding-top: 0.5rem;
-    padding-bottom: 2rem;
+.stApp{
+    background:var(--bg);
+    color:var(--text);
 }
 
-header[data-testid="stHeader"] {
-    background: transparent;
+header[data-testid="stHeader"]{
+    background:transparent;
 }
 
-section[data-testid="stSidebar"] {
-    display: none;
+section[data-testid="stSidebar"]{
+    display:none;
 }
 
-/* 상단 바 */
-.topbar {
-    background: #0f172a;
-    color: white;
-    padding: 8px 18px;
-    border-radius: 0 0 8px 8px;
-    margin: -8px -10px 16px -10px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 12px;
+.block-container{
+    padding-top:1.1rem;
+    padding-bottom:2.5rem;
+    max-width:1240px;
 }
 
-.topbar-left {
-    display:flex;
-    align-items:center;
-    gap:10px;
-    font-weight:700;
-}
-
-.db-pill {
-    color:#00d99a;
-    border:1px solid #007e63;
-    background:#062c28;
-    padding:4px 10px;
-    border-radius:999px;
-    font-size:11px;
-    font-weight:700;
-}
-
-.title-row {
-    background:white;
-    border-bottom:1px solid #e5eaf2;
-    padding: 10px 0 14px 0;
-    margin: -4px -10px 14px -10px;
-}
-
-.brand {
-    display:flex;
-    align-items:center;
-    gap:12px;
-}
-
-.brand-icon {
-    width:42px;
-    height:42px;
-    background:#5141f5;
-    border-radius:12px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    color:white;
-    font-size:22px;
-}
-
-.brand-name {
-    font-size:18px;
-    font-weight:800;
-    color:#172033;
-}
-
-.brand-sub {
-    font-size:12px;
-    color:#718096;
-    margin-top:2px;
-}
-
-.badge {
-    display:inline-block;
-    background:#eef0ff;
-    color:#4b42e9;
-    border-radius:6px;
-    padding:3px 7px;
-    font-size:11px;
-    margin-left:4px;
-    font-weight:700;
-}
-
-/* 카드 */
-.card {
-    background:white;
-    border:1px solid #dfe6f1;
-    border-radius:16px;
-    padding:18px 22px;
-    box-shadow:0 1px 2px rgba(20,35,70,.03);
-    margin-bottom:14px;
-}
-
-.book-card {
-    background:white;
-    border:1px solid #dfe6f1;
-    border-radius:16px;
-    padding:18px 22px;
-    margin-bottom:12px;
-}
-
-.section-title {
-    color:#4b3df5;
-    font-size:13px;
-    font-weight:800;
-    margin-bottom:10px;
-}
-
-.big-number {
-    font-size:24px;
-    font-weight:800;
-    color:#141b2d;
-}
-
-.muted {
-    color:#7c8799;
-    font-size:12px;
-}
-
-.blue {
-    color:#4938ff;
-}
-
-.green {
-    color:#00a878;
-}
-
-.orange {
-    color:#e58b00;
-}
-
-.progress-bg {
-    height:8px;
-    background:#edf1f7;
-    border-radius:999px;
-    overflow:hidden;
-    margin-top:8px;
-}
-
-.progress-fill {
-    height:100%;
-    background:#4b3df5;
-    border-radius:999px;
-}
-
-.record-empty {
-    border:1px dashed #cdd7e7;
-    background:#fff;
-    border-radius:14px;
-    padding:18px;
-    margin:10px 0;
-}
-
-.record-number {
-    width:32px;
-    height:32px;
-    border-radius:10px;
-    background:#edf1ff;
-    color:#4b3df5;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-weight:800;
-}
-
-.stat-box {
-    background:white;
-    border:1px solid #e0e6ef;
-    border-radius:15px;
-    padding:18px 20px;
-    min-height:105px;
-}
-
-.admin-card {
-    background:white;
-    border:1px solid #dfe6f1;
-    border-radius:15px;
-    padding:17px 20px;
-}
-
-.small-label {
-    color:#6d7788;
-    font-size:12px;
-    font-weight:600;
-}
-
-.table-head {
-    background:#f8fafc;
-    border-top:1px solid #e3e8f1;
-    border-bottom:1px solid #e3e8f1;
-    padding:12px 10px;
-    color:#607087;
-    font-size:12px;
-    font-weight:700;
-}
-
-.student-row {
-    background:white;
-    border-bottom:1px solid #edf0f5;
-    padding:13px 10px;
-}
-
-.status {
-    display:inline-block;
-    padding:4px 10px;
-    border-radius:999px;
-    font-size:11px;
-    font-weight:700;
-}
-
-.status-wait {
-    color:#e09a00;
-    border:1px solid #f2ce69;
-    background:#fffaf0;
-}
-
-.status-done {
-    color:#008d67;
-    border:1px solid #80d8bd;
-    background:#effcf7;
-}
-
-.notice {
-    border:1px solid #d9e2ff;
-    background:#f7f8ff;
-    color:#4b3df5;
-    border-radius:12px;
-    padding:11px 14px;
-    font-size:12px;
-}
-
-hr {
+div[data-testid="stForm"]{
     border:none;
-    border-top:1px solid #edf0f5;
-    margin:14px 0;
+    padding:0;
+    background:transparent;
 }
 
-/* Streamlit 기본 버튼 */
-.stButton > button {
-    border-radius:10px;
-    border:1px solid #dbe2ed;
-    font-weight:700;
-    color:#39455c;
-    background:white;
-    min-height:38px;
+.stButton > button,
+.stDownloadButton > button{
+    font-family:'Noto Sans KR', sans-serif !important;
+    border-radius:10px !important;
+    min-height:40px !important;
+    font-weight:700 !important;
+    border:1px solid var(--line) !important;
+    background:#fff !important;
+    color:#455166 !important;
+    box-shadow:none !important;
 }
 
-.stButton > button:hover {
-    border-color:#5141f5;
-    color:#5141f5;
+.stButton > button:hover{
+    border-color:var(--purple) !important;
+    color:var(--purple) !important;
 }
 
-.primary-btn .stButton > button {
-    background:#4b3df5;
-    color:white;
-    border-color:#4b3df5;
+.primary-button .stButton > button{
+    background:var(--purple) !important;
+    color:#fff !important;
+    border-color:var(--purple) !important;
 }
 
-div[data-testid="stForm"] {
-    border:1px solid #dfe6f1;
-    border-radius:15px;
-    background:white;
-    padding:20px;
+.primary-button .stButton > button:hover{
+    background:#4630ed !important;
+    color:#fff !important;
 }
 
-label[data-testid="stWidgetLabel"] p {
+.teacher-button .stButton > button{
+    background:#f0f9f6 !important;
+    color:#1a7865 !important;
+    border-color:#d8efe9 !important;
+}
+
+input, textarea{
+    border-radius:10px !important;
+}
+
+div[data-baseweb="input"] > div,
+div[data-baseweb="textarea"] > div{
+    border-radius:10px !important;
+    border-color:#cbd7e6 !important;
+}
+
+div[data-baseweb="select"] > div{
+    border-radius:10px !important;
+}
+
+label[data-testid="stWidgetLabel"] p{
     font-size:12px !important;
     font-weight:700 !important;
     color:#4a5568 !important;
 }
 
-div[data-baseweb="select"] > div {
+/* 로그인 페이지 */
+.login-wrap{
+    width:100%;
+    max-width:500px;
+    margin:0 auto;
+}
+
+.book-logo{
+    width:64px;
+    height:64px;
+    margin:0 auto 14px auto;
+    border-radius:14px 14px 18px 18px;
+    background:var(--purple);
+    color:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:35px;
+    box-shadow:0 12px 24px rgba(81,56,245,.18);
+}
+
+.login-title{
+    text-align:center;
+    font-size:25px;
+    font-weight:800;
+    letter-spacing:-.8px;
+    margin-top:2px;
+}
+
+.login-subtitle{
+    text-align:center;
+    color:#53617a;
+    font-size:13px;
+    margin-top:8px;
+    margin-bottom:30px;
+}
+
+.login-card{
+    background:#fff;
+    border:1px solid #dfe6f0;
+    border-radius:16px;
+    padding:30px 40px 28px 40px;
+    box-shadow:0 2px 7px rgba(23,32,51,.05);
+}
+
+.login-tabs{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    border-bottom:1px solid #dbe2ed;
+    margin-bottom:25px;
+}
+
+.login-tab{
+    text-align:center;
+    padding:2px 0 13px;
+    font-size:14px;
+    font-weight:700;
+}
+
+.login-tab.active{
+    color:var(--purple);
+    border-bottom:2px solid var(--purple);
+}
+
+.login-tab.inactive{
+    color:#5e6b80;
+}
+
+.helper{
+    color:#748197;
+    font-size:12px;
+    line-height:1.5;
+}
+
+.example-box{
+    margin-top:20px;
+    padding:15px 0;
+    border-top:1px solid #dfe6ee;
+    border-bottom:1px solid #dfe6ee;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    color:#e48b00;
+    font-size:12px;
+    font-weight:700;
+}
+
+.demo-link{
+    color:#8290a5;
+    font-size:12px;
+}
+
+.teacher-access{
+    margin-top:19px;
+    text-align:center;
+}
+
+.teacher-pill{
+    display:inline-block;
+    background:#f1f6fa;
+    border:1px solid #e4edf3;
+    color:#28586d;
     border-radius:9px;
+    padding:9px 15px;
+    font-size:12px;
+    font-weight:700;
 }
 
-textarea, input {
-    border-radius:9px !important;
+/* 공통 상단 */
+.topbar{
+    background:var(--navy);
+    color:white;
+    margin:-18px -12px 16px -12px;
+    padding:9px 19px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    font-size:11px;
+    border-radius:0;
 }
 
-[data-testid="stMetric"] {
-    background:transparent;
+.topbar-left{
+    display:flex;
+    align-items:center;
+    gap:9px;
+    font-weight:700;
 }
 
-@media (max-width: 800px) {
-    .block-container {
-        padding-left: 10px;
-        padding-right: 10px;
+.db-pill{
+    color:#00d999;
+    background:#062e29;
+    border:1px solid #057961;
+    padding:4px 9px;
+    border-radius:999px;
+    font-size:10px;
+}
+
+.teacher-header{
+    background:white;
+    border-bottom:1px solid #e3e8f0;
+    padding:10px 0 14px;
+    margin:0 -12px 18px;
+}
+
+.teacher-brand{
+    display:flex;
+    align-items:center;
+    gap:12px;
+}
+
+.teacher-brand-icon{
+    width:44px;
+    height:44px;
+    background:#111a31;
+    color:white;
+    border-radius:12px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:22px;
+}
+
+.teacher-brand-title{
+    font-size:18px;
+    font-weight:800;
+}
+
+.teacher-brand-sub{
+    color:#78859a;
+    font-size:12px;
+    margin-top:3px;
+}
+
+.dashboard-card{
+    background:white;
+    border:1px solid #dfe6f0;
+    border-radius:15px;
+    padding:18px 20px;
+    box-shadow:0 1px 2px rgba(20,35,70,.03);
+}
+
+.stat-card{
+    background:#fff;
+    border:1px solid #dfe6f0;
+    border-radius:15px;
+    padding:17px 19px;
+    min-height:108px;
+}
+
+.stat-label{
+    color:#6e7a8e;
+    font-size:12px;
+    font-weight:600;
+}
+
+.stat-number{
+    color:#111827;
+    font-size:24px;
+    font-weight:800;
+    margin-top:3px;
+}
+
+.stat-sub{
+    color:#7d899d;
+    font-size:11px;
+    margin-top:3px;
+}
+
+.status{
+    display:inline-block;
+    border-radius:999px;
+    padding:4px 9px;
+    font-size:10px;
+    font-weight:700;
+}
+
+.status-wait{
+    background:#fff9ed;
+    border:1px solid #f0cb64;
+    color:#d79400;
+}
+
+.status-done{
+    background:#effaf7;
+    border:1px solid #8bd8c3;
+    color:#008665;
+}
+
+.progress-bg{
+    width:100%;
+    height:7px;
+    background:#edf1f7;
+    border-radius:99px;
+    margin-top:7px;
+    overflow:hidden;
+}
+
+.progress-fill{
+    height:100%;
+    background:var(--purple);
+    border-radius:99px;
+}
+
+.small-muted{
+    color:#7e899d;
+    font-size:11px;
+}
+
+@media(max-width:800px){
+    .block-container{
+        padding-left:10px;
+        padding-right:10px;
+    }
+    .login-card{
+        padding:24px 20px;
     }
 }
 </style>
@@ -399,8 +451,18 @@ textarea, input {
 )
 
 # ------------------------------------------------------------
-# 공통 상단
+# 유틸
 # ------------------------------------------------------------
+def set_page(name):
+    st.session_state.page = name
+    st.rerun()
+
+
+def get_current_student():
+    sid = st.session_state.current_student_id
+    return next((s for s in st.session_state.students if s["학번"] == sid), None)
+
+
 def topbar():
     st.markdown(
         """
@@ -410,237 +472,291 @@ def topbar():
                 <span>중학교 15~17차시 독서 포트폴리오 수행평가 시스템</span>
                 <span class="db-pill">●　클라우드 DB: Google Sheets (GAS 검증 모드)</span>
             </div>
-            <div style="font-size:11px;color:#c7cfdd;">화면 전환:　독서 포트폴리오</div>
+            <div>교사 관리자 화면</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def page_title(title, subtitle, teacher=False):
-    icon = "▣"
+# ------------------------------------------------------------
+# 학생 로그인 화면
+# ------------------------------------------------------------
+def student_login():
+    st.markdown('<div style="height:25px;"></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
     st.markdown(
-        f"""
-        <div class="title-row">
-            <div class="brand">
-                <div class="brand-icon" style="background:{'#111a31' if teacher else '#5141f5'}">{icon}</div>
-                <div>
-                    <div class="brand-name">{title}
-                        <span class="badge">중학교 독서수행평가</span>
-                    </div>
-                    <div class="brand-sub">{subtitle}</div>
-                </div>
-            </div>
+        """
+        <div class="book-logo">▤</div>
+        <div class="login-title">중학교 독서 포트폴리오</div>
+        <div class="login-subtitle">15~17차시 한 학기 독서 누적 기록 & 수행평가 관리 시스템</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="login-tabs">
+            <div class="login-tab active">학생 로그인</div>
+            <div class="login-tab inactive">신규 학생 등록</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    with st.form("student_login_form"):
+        st.markdown("**학번** <span style='color:#7a8798;font-weight:400;'> (예: 20315 - 2학년 3반 15번)</span>", unsafe_allow_html=True)
+        student_id = st.text_input(
+            "학번입력",
+            placeholder="예: 20315",
+            label_visibility="collapsed",
+        )
 
-def switch_buttons():
-    """
-    화면 전환.
-    학생 화면에서는 교사 관리자 버튼을 표시하지 않고,
-    교사 화면에서는 학생 화면으로 돌아가는 버튼만 표시합니다.
-    교사 화면은 주소에 ?mode=teacher 를 붙여 직접 열 수 있습니다.
-    """
-    try:
-        url_mode = st.query_params.get("mode")
-    except Exception:
-        url_mode = None
+        st.markdown("**학생 이름**", unsafe_allow_html=True)
+        name = st.text_input(
+            "이름입력",
+            placeholder="예: 김서연",
+            label_visibility="collapsed",
+        )
 
-    if url_mode in ("student", "teacher"):
-        st.session_state.screen = url_mode
+        st.markdown("**교번번호 (PIN / 4자리 비밀번호)**", unsafe_allow_html=True)
+        pin = st.text_input(
+            "PIN입력",
+            placeholder="4자리 숫자 (예: 1234)",
+            type="password",
+            label_visibility="collapsed",
+        )
+        st.markdown(
+            '<div class="helper">개인 포트폴리오를 보호하기 위한 4자리 비밀번호입니다.</div>',
+            unsafe_allow_html=True,
+        )
 
-    if st.session_state.screen == "teacher":
-        c1, c2, c3 = st.columns([1.3, 1.3, 6])
-        with c1:
-            if st.button("학생 화면", key="go_student_top", use_container_width=True):
-                st.session_state.screen = "student"
-                st.query_params["mode"] = "student"
-                st.rerun()
-        with c2:
-            st.button(
-                "교사 관리자",
-                key="current_teacher_top",
-                use_container_width=True,
-                disabled=True,
+        st.markdown('<div class="primary-button" style="margin-top:14px;">', unsafe_allow_html=True)
+        login_clicked = st.form_submit_button("포트폴리오 입장하기  →", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if login_clicked:
+            sid = student_id.strip()
+            nm = name.strip()
+            pp = pin.strip()
+
+            matched = next(
+                (
+                    s for s in st.session_state.students
+                    if s["학번"] == sid and s["이름"] == nm and s["PIN"] == pp
+                ),
+                None,
             )
 
-
-# ------------------------------------------------------------
-# 학생 화면
-# ------------------------------------------------------------
-def student_screen():
-    topbar()
-
-    student = next(
-        (x for x in st.session_state.students if x["학번"] == st.session_state.selected_student),
-        st.session_state.students[0],
-    )
-
-    page_title(
-        "독서포트폴리오",
-        f"{student['반']} {student['학번']}번 · {student['이름']} 학생",
-    )
-
-    c1, c2, c3 = st.columns([6, 1.4, 1])
-    with c1:
-        st.markdown(
-            f"""
-            <div class="card" style="padding:20px 24px 16px 24px;">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                    <div>
-                        <div class="section-title">▣ 나의 이번 학기 선택 도서 (1~2권)</div>
-                        <div style="display:flex;align-items:center;gap:12px;">
-                            <div style="width:30px;height:30px;border-radius:9px;background:#e7edff;color:#4b3df5;
-                                display:flex;align-items:center;justify-content:center;font-weight:800;">1</div>
-                            <div>
-                                <b style="font-size:14px;">{student['도서'][0].split(' (')[0]}</b>
-                                <div class="muted">{student['도서'][0].split('(')[-1].replace(')','')} · 청소년 소설</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <hr>
-                <div class="section-title">⌁ 1학기 독서 포트폴리오 달성도 (15~17차시 기준)</div>
-                <div style="display:flex;justify-content:space-between;">
-                    <span class="muted">시작 (1차시)</span>
-                    <span style="font-size:11px;color:#f08b00;">10차시 (반환점)</span>
-                    <span style="font-size:11px;color:#4b3df5;">15~17차시 (수행평가 만점 구간)</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-        bcol1, bcol2 = st.columns([1.5, 4])
-        with bcol1:
-            if st.button(
-                "✎ 도서 변경 / 등록",
-                key="open_book_editor",
-                use_container_width=True,
-            ):
-                st.session_state.show_book_editor = not st.session_state.show_book_editor
-
-        if st.session_state.show_book_editor:
-            with st.form("book_editor_form"):
-                st.markdown("#### 이번 학기 선택 도서 등록")
-                st.caption("최대 2권까지 등록할 수 있습니다.")
-
-                def split_book(book_text):
-                    if " (" in book_text and book_text.endswith(")"):
-                        title, author = book_text.rsplit(" (", 1)
-                        return title, author[:-1]
-                    return book_text, ""
-
-                b1_title, b1_author = (
-                    split_book(student["도서"][0])
-                    if student["도서"] else ("", "")
-                )
-                b2_title, b2_author = (
-                    split_book(student["도서"][1])
-                    if len(student["도서"]) > 1 else ("", "")
-                )
-
-                ec1, ec2 = st.columns(2)
-                with ec1:
-                    title1 = st.text_input(
-                        "1권 제목",
-                        value=b1_title,
-                        placeholder="예: 아몬드",
-                    )
-                    author1 = st.text_input(
-                        "1권 작가",
-                        value=b1_author,
-                        placeholder="예: 손원평",
-                    )
-                with ec2:
-                    title2 = st.text_input(
-                        "2권 제목 (선택)",
-                        value=b2_title,
-                        placeholder="선택 입력",
-                    )
-                    author2 = st.text_input(
-                        "2권 작가 (선택)",
-                        value=b2_author,
-                        placeholder="선택 입력",
-                    )
-
-                save_book = st.form_submit_button(
-                    "도서 저장",
-                    use_container_width=True,
-                )
-
-                if save_book:
-                    new_books = []
-
-                    if title1.strip():
-                        new_books.append(
-                            f"{title1.strip()} ({author1.strip()})"
-                            if author1.strip()
-                            else title1.strip()
-                        )
-
-                    if title2.strip():
-                        new_books.append(
-                            f"{title2.strip()} ({author2.strip()})"
-                            if author2.strip()
-                            else title2.strip()
-                        )
-
-                    if not new_books:
-                        st.error("최소 1권의 도서 제목을 입력해 주세요.")
-                    else:
-                        student["도서"] = new_books[:2]
-                        st.session_state.show_book_editor = False
-                        st.success("선택 도서가 저장되었습니다.")
-                        st.rerun()
-
-    with c2:
-        st.markdown(
-            f"""
-            <div class="stat-box">
-                <div class="small-label">작성 차시</div>
-                <div class="big-number blue">{student['완료차시']} <span class="muted">/16차시</span></div>
-                <div class="muted">15차시 남음</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with c3:
-        st.markdown(
-            f"""
-            <div class="stat-box">
-                <div class="small-label">총 읽은 쪽수</div>
-                <div class="big-number green">{student['총독서']} <span class="muted">쪽</span></div>
-                <div class="muted">평균 0쪽/차시</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"""
-        <div class="card" style="padding:12px 22px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <b style="font-size:13px;color:#4b3df5;">⌑ 차시별 독서 포트폴리오 ({student['완료차시']}개)</b>
-                <span style="font-size:12px;color:#4b3df5;">▥ 독서 통계 그래프 & 성취 배지　　♙ 수행평가 채점 결과 확인</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            if matched:
+                st.session_state.current_student_id = matched["학번"]
+                st.session_state.student_logged_in = True
+                set_page("student_home")
+            else:
+                st.error("학번, 학생 이름, 교번번호(PIN)를 확인해 주세요.")
 
     st.markdown(
         """
-        <div class="card" style="background:#f7f8ff;border-color:#dce2ff;">
+        <div class="example-box">
+            <span>⚙ 선생님·참관용 예시 계정 둘러보기 (2명)</span>
+            <span class="demo-link">예시 보기　⌄</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 예시 계정
+    if st.button("예시 계정 1 · 20315 김서연", use_container_width=True):
+        st.session_state.current_student_id = "20315"
+        st.session_state.student_logged_in = True
+        set_page("student_home")
+
+    if st.button("예시 계정 2 · 10101 박예빈", use_container_width=True):
+        st.session_state.current_student_id = "10101"
+        st.session_state.student_logged_in = True
+        set_page("student_home")
+
+    st.markdown('<div class="teacher-access">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="teacher-pill">♧　교사용 관리 및 평가 페이지로 이동 (교사 전용)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    if st.button("교사용 관리 및 평가 페이지", use_container_width=True):
+        set_page("teacher_login")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------
+# 교사 로그인 화면
+# ------------------------------------------------------------
+def teacher_login():
+    st.markdown('<div style="height:35px;"></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="book-logo" style="background:#111a31;">▣</div>
+        <div class="login-title">교사용 관리 & 평가</div>
+        <div class="login-subtitle">학생 독서 포트폴리오 진도 및 수행평가 관리</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div style="font-size:14px;font-weight:800;margin-bottom:7px;">교사 전용 페이지</div>
+        <div class="helper" style="margin-bottom:20px;">
+            교사 비밀번호를 입력하면 학생 명단, 독서 진도, 수행평가 채점 화면으로 이동합니다.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("teacher_login_form"):
+        st.markdown("**교사 비밀번호**")
+        password = st.text_input(
+            "교사비밀번호",
+            type="password",
+            placeholder="교사 비밀번호 입력",
+            label_visibility="collapsed",
+        )
+
+        st.markdown('<div class="primary-button" style="margin-top:14px;">', unsafe_allow_html=True)
+        entered = st.form_submit_button("교사 페이지 입장하기  →", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if entered:
+            if password == st.session_state.teacher_password:
+                st.session_state.teacher_logged_in = True
+                set_page("teacher_dashboard")
+            else:
+                st.error("교사 비밀번호가 올바르지 않습니다.")
+
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+    if st.button("← 학생 로그인 화면으로 돌아가기", use_container_width=True):
+        set_page("student_login")
+
+    st.markdown(
+        """
+        <div style="margin-top:18px;text-align:center;color:#8b96a7;font-size:11px;">
+            초기 테스트 비밀번호: 1234
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------
+# 학생 홈
+# ------------------------------------------------------------
+def student_home():
+    student = get_current_student()
+    if not student:
+        set_page("student_login")
+        return
+
+    topbar()
+
+    c1, c2, c3, c4 = st.columns([5.4, 1.3, 1.4, 1.2])
+    with c1:
+        st.markdown(
+            f"""
+            <div class="teacher-brand">
+                <div class="teacher-brand-icon" style="background:#5138f5;">▤</div>
+                <div>
+                    <div class="teacher-brand-title">독서포트폴리오</div>
+                    <div class="teacher-brand-sub">{student['반']} {student['학번']}번 · {student['이름']} 학생</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c4:
+        if st.button("로그아웃", use_container_width=True):
+            st.session_state.student_logged_in = False
+            st.session_state.current_student_id = None
+            set_page("student_login")
+
+    # 선택 도서 / 통계
+    books_html = ""
+    for idx, book in enumerate(student["도서"], start=1):
+        title = book.split(" (")[0]
+        author = book.split("(")[-1].replace(")", "") if "(" in book else ""
+        books_html += f"""
+        <div style="display:flex;align-items:center;gap:11px;margin-top:10px;">
+            <div style="width:29px;height:29px;background:#e9eeff;color:#5138f5;border-radius:9px;
+                        display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;">{idx}</div>
+            <div>
+                <b style="font-size:13px;">{title}</b>
+                <div class="small-muted">{author}</div>
+            </div>
+        </div>
+        """
+
+    col_main, col_stat1, col_stat2 = st.columns([5.7, 1.35, 1.35])
+    with col_main:
+        st.markdown(
+            f"""
+            <div class="dashboard-card">
+                <div style="color:#5138f5;font-size:13px;font-weight:800;">▣ 나의 이번 학기 선택 도서 (1~2권)</div>
+                {books_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_stat1:
+        st.markdown(
+            f"""
+            <div class="stat-card">
+                <div class="stat-label">작성 차시</div>
+                <div class="stat-number" style="color:#5138f5;">{student['완료차시']} <span style="font-size:12px;color:#8591a4;font-weight:500;">/16차시</span></div>
+                <div class="stat-sub">15차시 남음</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_stat2:
+        st.markdown(
+            f"""
+            <div class="stat-card">
+                <div class="stat-label">총 읽은 쪽수</div>
+                <div class="stat-number" style="color:#00a878;">{student['총독서']} <span style="font-size:12px;color:#8591a4;font-weight:500;">쪽</span></div>
+                <div class="stat-sub">평균 0쪽/차시</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        """
+        <div class="dashboard-card" style="margin-top:14px;">
+            <div style="color:#5138f5;font-size:13px;font-weight:800;margin-bottom:8px;">⌁ 1학기 독서 포트폴리오 달성도 (15~17차시 기준)</div>
+            <div class="progress-bg"><div class="progress-fill" style="width:0%;"></div></div>
+            <div style="display:flex;justify-content:space-between;margin-top:7px;">
+                <span class="small-muted">시작 (1차시)</span>
+                <span style="font-size:10px;color:#e18a00;">10차시 (반환점)</span>
+                <span style="font-size:10px;color:#5138f5;">15~17차시 (수행평가 만점 구간)</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="dashboard-card" style="margin-top:14px;background:#fafaff;border-color:#dfe3ff;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
                     <b style="font-size:13px;">매 차시 (30~35분) 독서 후 배운 점을 누적 기록하세요</b>
-                    <div class="muted" style="color:#5141f5;margin-top:3px;">
+                    <div style="color:#616fa0;font-size:11px;margin-top:4px;">
                         요약, 인상 깊은 문장, 질문과 답변, 나의 생각과 느낌이 누적되어 한 권의 포트폴리오가 됩니다.
                     </div>
                 </div>
@@ -650,99 +766,71 @@ def student_screen():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([7, 1.6, 1.5])
+    c1, c2 = st.columns([5, 1.7])
     with c2:
+        st.markdown('<div class="primary-button">', unsafe_allow_html=True)
         if st.button("＋ 새 차시 독서 기록 작성", use_container_width=True):
-            st.session_state.show_add_record = True
-    with c3:
-        st.empty()
+            st.session_state.show_new_record = True
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # 기록 작성 폼
-    if st.session_state.show_add_record:
-        st.markdown("### 새 차시 독서 기록")
-        with st.form("new_record_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                session_no = st.number_input(
-                    "차시",
-                    min_value=1,
-                    max_value=17,
-                    value=min(student["완료차시"] + 1, 17),
-                )
-                pages = st.number_input("읽은 쪽수", min_value=0, max_value=1000, value=0)
-                summary = st.text_area("요약", height=110, placeholder="오늘 읽은 내용을 자신의 말로 정리해 보세요.")
-            with col2:
-                memorable = st.text_area("인상 깊은 내용", height=110)
-                question = st.text_area("질문과 답변", height=110)
-                feeling = st.text_area("느낀점", height=110)
+    if st.session_state.show_new_record:
+        st.markdown("### 새 차시 기록")
+        with st.form("new_record"):
+            n1, n2 = st.columns(2)
+            with n1:
+                session_no = st.number_input("차시", 1, 17, max(1, min(17, student["완료차시"] + 1)))
+                pages = st.number_input("읽은 쪽수", 0, 1000, 0)
+                summary = st.text_area("요약", height=120, placeholder="오늘 읽은 내용을 자신의 말로 정리해 보세요.")
+            with n2:
+                memorable = st.text_area("인상 깊은 내용", height=120)
+                question = st.text_area("질문과 답변", height=120)
+                feeling = st.text_area("느낀점", height=120)
 
-            b1, b2 = st.columns(2)
-            with b1:
-                submitted = st.form_submit_button("기록 저장", use_container_width=True)
-            with b2:
-                cancelled = st.form_submit_button("취소", use_container_width=True)
-
-            if submitted:
+            save = st.form_submit_button("저장", use_container_width=True)
+            if save:
                 if not summary.strip():
                     st.warning("요약을 입력해 주세요.")
                 else:
                     key = student["학번"]
                     st.session_state.records.setdefault(key, [])
-                    st.session_state.records[key].append(
-                        {
-                            "차시": int(session_no),
-                            "쪽수": int(pages),
-                            "요약": summary,
-                            "인상": memorable,
-                            "질문": question,
-                            "느낀점": feeling,
-                            "작성일": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        }
-                    )
+                    st.session_state.records[key] = [
+                        r for r in st.session_state.records[key] if r["차시"] != int(session_no)
+                    ]
+                    st.session_state.records[key].append({
+                        "차시": int(session_no),
+                        "쪽수": int(pages),
+                        "요약": summary.strip(),
+                        "인상": memorable.strip(),
+                        "질문": question.strip(),
+                        "느낀점": feeling.strip(),
+                        "작성일": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    })
                     student["완료차시"] = len(st.session_state.records[key])
-                    student["총독서"] = sum(x["쪽수"] for x in st.session_state.records[key])
-                    st.session_state.show_add_record = False
-                    st.success("독서 기록이 저장되었습니다.")
+                    student["총독서"] = sum(r["쪽수"] for r in st.session_state.records[key])
+                    st.session_state.show_new_record = False
+                    st.success("저장되었습니다.")
                     st.rerun()
 
-            if cancelled:
-                st.session_state.show_add_record = False
-                st.rerun()
-
-    # 차시 목록
     records = st.session_state.records.get(student["학번"], [])
-    for n in range(1, 17):
-        rec = next((r for r in records if r["차시"] == n), None)
+    st.markdown(f"#### 차시별 독서 포트폴리오 ({len(records)}개)")
 
-        if rec:
-            st.markdown(
-                f"""
-                <div class="book-card">
-                    <div style="display:flex;gap:14px;align-items:flex-start;">
-                        <div class="record-number">{n}</div>
-                        <div style="flex:1;">
-                            <div style="font-weight:800;font-size:13px;">{n}차시 독서 기록</div>
-                            <div class="muted" style="margin-top:4px;">
-                                {rec['작성일']} · {rec['쪽수']}쪽
-                            </div>
-                            <div style="margin-top:9px;font-size:12px;line-height:1.6;">
-                                <b>요약</b>　{rec['요약'][:180]}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    for n in range(1, 17):
+        r = next((x for x in records if x["차시"] == n), None)
+        if r:
+            with st.expander(f"{n}차시 독서 기록 · {r['쪽수']}쪽"):
+                st.write("**요약**", r["요약"])
+                st.write("**인상 깊은 내용**", r["인상"])
+                st.write("**질문과 답변**", r["질문"])
+                st.write("**느낀점**", r["느낀점"])
         else:
             st.markdown(
                 f"""
-                <div class="record-empty">
-                    <div style="display:flex;align-items:center;gap:12px;">
-                        <div class="record-number" style="background:#f1f4f8;color:#7c8799;">{n}</div>
+                <div class="dashboard-card" style="margin-top:10px;padding:14px 18px;border-style:dashed;">
+                    <div style="display:flex;align-items:center;gap:11px;">
+                        <div style="width:30px;height:30px;border-radius:9px;background:#f0f3f7;color:#7f8ba0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;">{n}</div>
                         <div>
-                            <b style="font-size:13px;color:#56647a;">{n}차시 독서 기록</b>
-                            <div class="muted">아직 작성되지 않았습니다. 클릭하여 오늘 읽은 내용을 기록하세요.</div>
+                            <b style="font-size:12px;color:#56647a;">{n}차시 독서 기록</b>
+                            <div class="small-muted">아직 작성되지 않았습니다.</div>
                         </div>
                     </div>
                 </div>
@@ -750,58 +838,67 @@ def student_screen():
                 unsafe_allow_html=True,
             )
 
-    # 학생 선택
-    st.markdown("---")
-    st.markdown("#### 학생 화면 테스트")
-    options = {f"{s['반']} {s['학번']} {s['이름']}": s["학번"] for s in st.session_state.students}
-    selected_label = next(k for k, v in options.items() if v == st.session_state.selected_student)
-    new_label = st.selectbox("학생 선택", list(options.keys()), index=list(options.keys()).index(selected_label))
-    new_id = options[new_label]
-    if new_id != st.session_state.selected_student:
-        st.session_state.selected_student = new_id
-        st.rerun()
-
 
 # ------------------------------------------------------------
-# 교사 관리자 화면
+# 교사 대시보드
 # ------------------------------------------------------------
-def teacher_screen():
+def teacher_dashboard():
+    if not st.session_state.teacher_logged_in:
+        set_page("teacher_login")
+        return
+
     topbar()
 
-    page_title(
-        "교사용 수행평가 관리 대시보드",
-        "중학교 15~17차시 독서 포트폴리오 누적 진도 관리 & 학기말 성적 연계",
-        teacher=True,
+    st.markdown(
+        """
+        <div class="teacher-header">
+            <div class="teacher-brand">
+                <div class="teacher-brand-icon">▣</div>
+                <div>
+                    <div class="teacher-brand-title">교사용 수행평가 관리 대시보드</div>
+                    <div class="teacher-brand-sub">중학교 15~17차시 독서 포트폴리오 누적 진도 관리 & 학기말 성적 연계</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # 관리자 버튼
-    c1, c2, c3, c4, c5 = st.columns([1.3, 1.3, 1.3, 1.3, 1.1])
-    with c1:
+    b1, b2, b3, b4, b5 = st.columns([1.5, 1.3, 1.2, 1.3, 1.4])
+    with b1:
         st.button("ⓘ 채점 기준표(루브릭)", use_container_width=True)
-    with c2:
+    with b2:
         st.button("🔑 비밀번호 변경", use_container_width=True)
-    with c3:
+    with b3:
         st.button("⚙ 반영비율 (20%)", use_container_width=True)
-    with c4:
+    with b4:
         if st.button("학생 화면 →", use_container_width=True):
-            st.session_state.screen = "student"
-            st.rerun()
-    with c5:
-        st.empty()
+            st.session_state.teacher_logged_in = False
+            set_page("student_login")
+    with b5:
+        if st.button("교사 로그아웃", use_container_width=True):
+            st.session_state.teacher_logged_in = False
+            set_page("teacher_login")
 
-    # 탭 느낌의 버튼
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    t1, t2, t3, t4 = st.columns([1.5, 1.7, 1.7, 5])
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    t1, t2, t3 = st.columns([1.5, 1.8, 1.8])
     with t1:
-        st.markdown("<div style='background:#4b3df5;color:white;border-radius:10px;padding:9px;text-align:center;font-size:12px;font-weight:700;'>♧ 학생별 명단 및 채점</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='background:#5138f5;color:#fff;border-radius:10px;padding:10px;text-align:center;font-size:12px;font-weight:700;'>♧ 학생별 명단 및 채점</div>",
+            unsafe_allow_html=True,
+        )
     with t2:
-        st.markdown("<div style='background:white;border:1px solid #dce3ee;border-radius:10px;padding:9px;text-align:center;font-size:12px;font-weight:700;'>▥ 학급별 통계 및 비교 (3개 반)</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='background:#fff;border:1px solid #dfe6f0;border-radius:10px;padding:10px;text-align:center;font-size:12px;font-weight:700;'>▥ 학급별 통계 및 비교</div>",
+            unsafe_allow_html=True,
+        )
     with t3:
-        st.markdown("<div style='background:white;border:1px solid #dce3ee;border-radius:10px;padding:9px;text-align:center;font-size:12px;font-weight:700;'>▣ 데이터 저장소 & 백업 안내</div>", unsafe_allow_html=True)
-    with t4:
-        st.empty()
+        st.markdown(
+            "<div style='background:#fff;border:1px solid #dfe6f0;border-radius:10px;padding:10px;text-align:center;font-size:12px;font-weight:700;'>▣ 데이터 저장소 & 백업 안내</div>",
+            unsafe_allow_html=True,
+        )
 
-    # 통계 카드
     students = st.session_state.students
     total = len(students)
     avg_sessions = sum(s["완료차시"] for s in students) / total if total else 0
@@ -809,32 +906,34 @@ def teacher_screen():
     scores = [s["점수"] for s in students if s["점수"] is not None]
     avg_score = sum(scores) / len(scores) if scores else None
 
-    cols = st.columns(4)
-    card_data = [
-        ("♧", "조회 학생 수", f"{total}명", "전체 학년 전체 반"),
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    stats = [
+        ("♧", "조회 학생 수", f"{total}명", "전체 학생"),
         ("◷", "평균 작성 차시", f"{avg_sessions:.1f}", "차시당 30~35분 독서"),
-        ("✓", "수행 채점 완료율", f"{graded} / {total}명", f"{(graded/total*100 if total else 0):.0f}%"),
+        ("✓", "수행 채점 완료율", f"{graded} / {total}명", f"{graded / total * 100:.0f}%"),
         ("♙", "평가자 평균 총점", f"{avg_score:.1f}점" if avg_score is not None else "–점", "학기말 20% 환산 반영"),
     ]
-    for col, (ico, label, value, sub) in zip(cols, card_data):
+
+    sc = st.columns(4)
+    for col, (icon, label, value, sub) in zip(sc, stats):
         with col:
             st.markdown(
                 f"""
-                <div class="stat-box">
-                    <div style="font-size:22px;color:#4b3df5;">{ico}</div>
-                    <div class="small-label">{label}</div>
-                    <div class="big-number">{value}</div>
-                    <div class="muted">{sub}</div>
+                <div class="stat-card">
+                    <div style="font-size:19px;color:#5138f5;">{icon}</div>
+                    <div class="stat-label">{label}</div>
+                    <div class="stat-number">{value}</div>
+                    <div class="stat-sub">{sub}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:11px'></div>", unsafe_allow_html=True)
 
-    # 필터
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    f1, f2, f3, f4 = st.columns([1.4, 1.4, 2.5, 2.5])
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    f1, f2, f3, f4 = st.columns([1.3, 1.3, 2.7, 2.3])
     with f1:
         grade = st.selectbox("학년", ["전체 학년", "1학년", "2학년", "3학년"])
     with f2:
@@ -845,7 +944,6 @@ def teacher_screen():
         search = st.text_input("검색", placeholder="학생 이름, 학번, 도서명 검색...")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 필터링
     filtered = []
     for s in students:
         if grade != "전체 학년" and not s["반"].startswith(grade[0]):
@@ -858,115 +956,106 @@ def teacher_screen():
             continue
         if state == "15차시+" and s["완료차시"] < 15:
             continue
+
         if search:
-            target = " ".join([s["이름"], s["학번"], *s["도서"]])
+            target = " ".join([s["학번"], s["이름"], *s["도서"]])
             if search.lower() not in target.lower():
                 continue
+
         filtered.append(s)
 
     st.markdown(
         f"""
-        <div class="card" style="padding:14px 20px 8px 20px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <b style="color:#1c3edb;font-size:13px;">♧ 학생 독서 포트폴리오 진도 및 수행평가 성적 명단 ({len(filtered)}명)</b>
-                <span style="color:#65738a;font-size:11px;">* [AI 자동 채점 / 수기 채점]을 통해 수행평가 점수와 세특을 완성하세요.</span>
+        <div class="dashboard-card" style="margin-top:10px;padding:15px 18px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <b style="font-size:13px;color:#1d3bd3;">♧ 학생 독서 포트폴리오 진도 및 수행평가 성적 명단 ({len(filtered)}명)</b>
+                <span class="small-muted">* AI 자동 채점 / 수기 채점으로 수행평가 점수를 완성하세요.</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # 테이블 헤더
+    # 표는 작은 화면에서도 유지되도록 HTML grid로 표시
     st.markdown(
         """
-        <div class="table-head">
-            <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.9fr 2.0fr 1.2fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr 1fr;gap:8px;">
+        <div class="dashboard-card" style="padding:0;overflow:hidden;">
+            <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.8fr 1.9fr 1.2fr 0.8fr 0.8fr 0.8fr 0.9fr 0.9fr 0.9fr;
+                        gap:6px;padding:12px 10px;background:#f8fafc;border-top:1px solid #e5ebf2;border-bottom:1px solid #e5ebf2;
+                        color:#67758a;font-size:10px;font-weight:800;">
                 <div>학적</div><div>학번</div><div>성명</div><div>선택 도서 (1~2권)</div>
-                <div>진도 (16차시 기준)</div><div>총 읽은 쪽수</div><div>수행 총점</div>
-                <div>성취도</div><div>학기말 반영</div><div>채점 상태</div><div>관리</div>
+                <div>진도 (16차시)</div><div>총 쪽수</div><div>수행 총점</div><div>성취도</div>
+                <div>학기말 반영</div><div>채점 상태</div><div>관리</div>
             </div>
-        </div>
         """,
         unsafe_allow_html=True,
     )
 
     for s in filtered:
-        score_text = f"{s['점수']}점" if s["점수"] is not None else "–"
-        status_class = "status-done" if s["채점"] else "status-wait"
-        status_text = "채점완료" if s["채점"] else "미채점"
+        score = f"{s['점수']}점" if s["점수"] is not None else "–"
+        status = "채점완료" if s["채점"] else "미채점"
         books = "<br>".join(s["도서"])
+        progress = min(100, s["완료차시"] / 16 * 100)
 
         st.markdown(
             f"""
-            <div class="student-row">
-                <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.9fr 2.0fr 1.2fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr 1fr;gap:8px;align-items:center;font-size:12px;">
-                    <div><span style="background:#eef2f7;border-radius:6px;padding:4px 6px;">{s['반']}<br>({s['반'][0]}반)</span></div>
-                    <div><b>{s['학번']}</b></div>
-                    <div><b>{s['이름']}</b>　◉</div>
-                    <div>{books}</div>
-                    <div>
-                        <b style="color:#4b3df5;">{s['완료차시']} / 16차시</b>
-                        <div class="progress-bg"><div class="progress-fill" style="width:{min(s['완료차시']/16*100,100)}%;"></div></div>
-                    </div>
-                    <div><b>{s['총독서']}</b> 쪽</div>
-                    <div>{score_text}</div>
-                    <div>–</div>
-                    <div>–</div>
-                    <div><span class="status {status_class}">{status_text}</span></div>
-                    <div style="display:flex;gap:5px;"></div>
+            <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.8fr 1.9fr 1.2fr 0.8fr 0.8fr 0.8fr 0.9fr 0.9fr 0.9fr;
+                        gap:6px;padding:14px 10px;border-bottom:1px solid #edf0f5;align-items:center;font-size:10px;background:#fff;">
+                <div><span style="background:#eef2f7;border-radius:6px;padding:4px 5px;">{s['반']}</span></div>
+                <div><b>{s['학번']}</b></div>
+                <div><b>{s['이름']}</b></div>
+                <div>{books}</div>
+                <div>
+                    <b style="color:#5138f5;">{s['완료차시']} / 16차시</b>
+                    <div class="progress-bg"><div class="progress-fill" style="width:{progress}%;"></div></div>
                 </div>
+                <div><b>{s['총독서']}</b>쪽</div>
+                <div>{score}</div>
+                <div>–</div>
+                <div>–</div>
+                <div><span class="status {'status-done' if s['채점'] else 'status-wait'}">{status}</span></div>
+                <div></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # 행별 관리 버튼
-        a, b, c, d, e = st.columns([1, 1, 1, 1, 6])
-        with a:
-            if st.button("채점", key=f"grade_{s['학번']}"):
+        a1, a2 = st.columns([1, 8])
+        with a1:
+            if st.button("채점" if not s["채점"] else "수정", key=f"grade_{s['학번']}", use_container_width=True):
                 st.session_state.grade_student = s["학번"]
-        with b:
-            if st.button("학생", key=f"view_{s['학번']}"):
-                st.session_state.selected_student = s["학번"]
-                st.session_state.screen = "student"
-                st.rerun()
 
-    # 채점 영역
+    st.markdown("</div>", unsafe_allow_html=True)
+
     if "grade_student" in st.session_state:
-        target = next((x for x in students if x["학번"] == st.session_state.grade_student), None)
+        target = next(
+            (s for s in students if s["학번"] == st.session_state.grade_student),
+            None
+        )
         if target:
-            st.markdown("---")
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             st.markdown(f"### 📝 {target['이름']} 학생 수행평가 채점")
-            with st.form(f"grading_{target['학번']}"):
+
+            with st.form(f"grade_form_{target['학번']}"):
                 st.markdown(
                     """
-                    <div class="notice">
-                    루브릭에 따라 AI 자동 채점 또는 수기 채점을 선택할 수 있습니다.
-                    AI 점수는 교사가 수정한 뒤 최종 저장할 수 있도록 구성했습니다.
+                    <div style="padding:11px 13px;border-radius:10px;background:#f6f7ff;border:1px solid #dfe3ff;color:#525d86;font-size:11px;">
+                        루브릭에 따라 채점 수준과 점수를 입력하세요. AI 자동 채점 결과를 사용한다면 교사가 최종 점수를 수정할 수 있습니다.
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-                gc1, gc2 = st.columns(2)
-                with gc1:
-                    level = st.radio(
-                        "평가 수준",
-                        ["탁월함", "우수함", "보통", "노력 요함"],
-                        horizontal=True,
-                    )
-                with gc2:
-                    score = st.number_input(
-                        "수행평가 총점 (100점)",
-                        min_value=0,
-                        max_value=100,
-                        value=int(target["점수"] or 0),
-                        step=1,
-                    )
-                feedback = st.text_area("교사 피드백 / 세특 메모", height=100)
-                save_grade = st.form_submit_button("최종 채점 저장", use_container_width=True)
+                g1, g2 = st.columns(2)
+                with g1:
+                    level = st.radio("평가 수준", ["탁월함", "우수함", "보통", "노력 요함"], horizontal=True)
+                with g2:
+                    score_value = st.number_input("수행평가 총점 (100점)", 0, 100, int(target["점수"] or 0))
 
-                if save_grade:
-                    target["점수"] = int(score)
+                feedback = st.text_area("교사 피드백 / 세특 메모", height=100)
+                save = st.form_submit_button("최종 채점 저장", use_container_width=True)
+
+                if save:
+                    target["점수"] = int(score_value)
                     target["채점"] = True
                     st.session_state.pop("grade_student", None)
                     st.success("채점 결과가 저장되었습니다.")
@@ -974,11 +1063,18 @@ def teacher_screen():
 
 
 # ------------------------------------------------------------
-# 실행
+# 페이지 실행
 # ------------------------------------------------------------
-switch_buttons()
+if st.session_state.page == "student_login":
+    student_login()
 
-if st.session_state.screen == "student":
-    student_screen()
-else:
-    teacher_screen()
+elif st.session_state.page == "teacher_login":
+    teacher_login()
+
+elif st.session_state.page == "student_home":
+    if not st.session_state.student_logged_in:
+        set_page("student_login")
+    student_home()
+
+elif st.session_state.page == "teacher_dashboard":
+    teacher_dashboard()
