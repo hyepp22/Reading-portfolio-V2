@@ -121,21 +121,30 @@ def now_string() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def get_teacher_password() -> str:
+def get_app_secret(name: str, default: Any = None) -> Any:
+    """Read app settings from [app], with legacy top-level fallback."""
     try:
-        return normalize_text(st.secrets["app"]["teacher_password"])
+        app_secrets = st.secrets.get("app", {})
+        if isinstance(app_secrets, dict) and name in app_secrets:
+            return app_secrets[name]
     except Exception:
-        return ""
+        pass
+
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def get_teacher_password() -> str:
+    return normalize_text(get_app_secret("teacher_password", ""))
 
 
 def demo_enabled() -> bool:
-    try:
-        value = st.secrets["app"].get("enable_demo_accounts", True)
-        if isinstance(value, bool):
-            return value
-        return normalize_text(value).lower() in {"1", "true", "yes", "on"}
-    except Exception:
-        return True
+    value = get_app_secret("enable_demo_accounts", True)
+    if isinstance(value, bool):
+        return value
+    return normalize_text(value).lower() in {"1", "true", "yes", "on"}
 
 
 # =========================================================
@@ -145,7 +154,7 @@ def make_empty_df(columns: Iterable[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=list(columns))
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def read_sheet(worksheet: str) -> pd.DataFrame:
     """Google Sheet 데이터를 20초 동안 캐시합니다.
 
@@ -158,7 +167,7 @@ def read_sheet(worksheet: str) -> pd.DataFrame:
 
     conn = get_connection()
     try:
-        df = conn.read(worksheet=worksheet, ttl=20)
+        df = conn.read(worksheet=worksheet, ttl=60, evaluate_formulas=False)
     except Exception as error:
         raise RuntimeError(
             f"Google Sheets의 '{worksheet}' 탭을 읽을 수 없습니다. "
@@ -285,6 +294,17 @@ def get_books(student_id: Optional[str] = None) -> pd.DataFrame:
 
     if student_id:
         df = df[df["학번"] == normalize_student_id(student_id)].copy()
+    return df
+
+
+def get_student_books_cached(student_id: str) -> pd.DataFrame:
+    cached = st.session_state.get("student_books_cache")
+    cached_sid = st.session_state.get("student_books_cache_sid")
+    if cached is not None and cached_sid == student_id:
+        return cached.copy()
+    df = get_books(student_id)
+    st.session_state["student_books_cache"] = df.copy()
+    st.session_state["student_books_cache_sid"] = student_id
     return df
 
 
@@ -588,6 +608,21 @@ def login_student(student_id: str, name: str, pin: str) -> bool:
         st.error("PIN은 숫자 4자리로 입력해 주세요.")
         return False
 
+    # 예시 계정은 Google Sheets 조회 없이 즉시 로그인합니다.
+    if demo_enabled():
+        for demo in DEMO_ACCOUNTS:
+            if (demo["학번"] == student_id and demo["이름"] == name and demo["PIN"] == pin):
+                st.session_state.update({
+                    "role": "student",
+                    "student_id": student_id,
+                    "student_name": name,
+                    "page": "student",
+                    "student_section": "선택 도서 등록",
+                    "student_books_cache": None,
+                })
+                return True
+
+    # 실제 학생 로그인 시점에만 Students를 조회합니다.
     students = get_students()
     if not students.empty:
         match = students[
@@ -603,23 +638,6 @@ def login_student(student_id: str, name: str, pin: str) -> bool:
                 }
             )
             return True
-
-    if demo_enabled():
-        for demo in DEMO_ACCOUNTS:
-            if (
-                demo["학번"] == student_id
-                and demo["이름"] == name
-                and demo["PIN"] == pin
-            ):
-                st.session_state.update(
-                    {
-                        "role": "student",
-                        "student_id": student_id,
-                        "student_name": name,
-                        "page": "student",
-                    }
-                )
-                return True
 
     st.error("학번, 이름, PIN을 다시 확인해 주세요.")
     return False
@@ -773,28 +791,13 @@ def logout() -> None:
     st.rerun()
 
 
-def render_student_profile(student_id: str, student_name: str, total_sessions: int) -> None:
-    books = get_books(student_id)
-    book_text = "등록 도서 없음"
-    if not books.empty:
-        names = [
-            normalize_text(v)
-            for v in books["도서명"].tolist()
-            if normalize_text(v)
-        ]
-        if names:
-            book_text = " / ".join(names[:2])
-
-    progress = calculate_progress(student_id, total_sessions)
-
+def render_student_profile(student_id: str, student_name: str) -> None:
     st.markdown(
         f"""
         <div class="profile-card">
             <div class="profile-name">👋 {student_name} 학생</div>
-            <div class="profile-sub">학번 {student_id} · 선택 도서: {book_text}</div>
-            <div class="profile-sub" style="margin-top:.35rem;">
-                독서 진행률: {progress['completed']}/{progress['total']}차시 ({progress['percent']:.0f}%)
-            </div>
+            <div class="profile-sub">학번 {student_id} · 중학교 독서 포트폴리오</div>
+            <div class="profile-sub" style="margin-top:.35rem;">선택한 메뉴의 데이터만 불러옵니다.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -805,7 +808,7 @@ def render_books_tab(student_id: str) -> None:
     st.markdown('<div class="section-title">이번 학기 선택 도서</div>', unsafe_allow_html=True)
     st.caption("최대 2권까지 등록할 수 있습니다. 같은 도서는 도서 1 또는 도서 2로 수정할 수 있습니다.")
 
-    books = get_books(student_id)
+    books = get_student_books_cached(student_id)
     current = {}
     if not books.empty:
         for _, row in books.iterrows():
@@ -859,6 +862,9 @@ def render_books_tab(student_id: str) -> None:
                 },
                 ["학번", "도서번호"],
             )
+            st.session_state["student_books_cache"] = None
+            st.session_state["student_books_cache_sid"] = None
+            st.cache_data.clear()
             st.success(f"도서 {book_no}가 저장되었습니다.")
             st.rerun()
 
@@ -1128,36 +1134,47 @@ def render_evaluation_result_tab(student_id: str, total_sessions: int) -> None:
 
 
 def render_student_page() -> None:
-    total_sessions = get_total_sessions()
     student_id = st.session_state.student_id
     student_name = st.session_state.student_name
 
-    render_student_profile(student_id, student_name, total_sessions)
+    render_student_profile(student_id, student_name)
 
-    top_left, top_right = st.columns([6, 1])
+    _, top_right = st.columns([6, 1])
     with top_right:
         if st.button("로그아웃", use_container_width=True):
             logout()
 
-    tab_book, tab_log, tab_stats, tab_eval = st.tabs(
-        [
-            "선택 도서 등록",
-            "차시별 독서 누가기록",
-            "독서 통계 그래프",
-            "수행평가 채점 결과 확인",
-        ]
+    sections = [
+        "선택 도서 등록",
+        "차시별 독서 누가기록",
+        "독서 통계 그래프",
+        "수행평가 채점 결과 확인",
+    ]
+    current = st.session_state.get("student_section", sections[0])
+    if current not in sections:
+        current = sections[0]
+
+    selected = st.radio(
+        "학생 메뉴",
+        sections,
+        index=sections.index(current),
+        horizontal=True,
+        key="student_section_radio",
     )
+    st.session_state["student_section"] = selected
 
-    with tab_book:
+    # 선택한 메뉴만 실행합니다. st.tabs()와 달리 다른 탭의 Google API 조회가
+    # 페이지 로드 때 동시에 실행되지 않습니다.
+    if selected == "선택 도서 등록":
         render_books_tab(student_id)
-
-    with tab_log:
+    elif selected == "차시별 독서 누가기록":
+        total_sessions = get_total_sessions()
         render_log_tab(student_id, total_sessions)
-
-    with tab_stats:
+    elif selected == "독서 통계 그래프":
+        total_sessions = get_total_sessions()
         render_stats_tab(student_id, total_sessions)
-
-    with tab_eval:
+    else:
+        total_sessions = get_total_sessions()
         render_evaluation_result_tab(student_id, total_sessions)
 
 
@@ -1422,16 +1439,15 @@ def render_teacher_logs(student_id: str, total_sessions: int) -> None:
 
 
 def render_teacher_page() -> None:
-    total_sessions = get_total_sessions()
     render_hero()
 
     header_left, header_right = st.columns([6, 1])
     with header_left:
         st.markdown(
-            f"""
+            """
             <div class="card">
                 <div class="section-title">교사 관리 콘솔</div>
-                <div class="help-text">현재 학기 총 {total_sessions}차시</div>
+                <div class="help-text">필요한 메뉴의 데이터만 Google Sheets에서 불러옵니다.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1440,41 +1456,53 @@ def render_teacher_page() -> None:
         if st.button("로그아웃", use_container_width=True):
             logout()
 
-    tab_settings, tab_students, tab_evaluate = st.tabs(
-        ["시스템 설정", "학생 목록", "누가기록·채점"]
+    sections = ["시스템 설정", "학생 목록", "누가기록·채점"]
+    current = st.session_state.get("teacher_section", sections[0])
+    if current not in sections:
+        current = sections[0]
+
+    selected = st.radio(
+        "교사 메뉴",
+        sections,
+        index=sections.index(current),
+        horizontal=True,
+        key="teacher_section_radio",
     )
+    st.session_state["teacher_section"] = selected
 
-    with tab_settings:
+    if selected == "시스템 설정":
         render_teacher_settings()
+        return
 
-    with tab_students:
+    total_sessions = get_total_sessions()
+
+    if selected == "학생 목록":
         selected_id = render_teacher_student_list(total_sessions)
         if selected_id:
             st.session_state["teacher_selected_student"] = selected_id
+        return
 
-    with tab_evaluate:
-        students = get_students()
-        if students.empty:
-            st.info("학생을 먼저 등록해 주세요.")
-            return
+    students = get_students()
+    if students.empty:
+        st.info("학생을 먼저 등록해 주세요.")
+        return
 
-        saved_student = st.session_state.get("teacher_selected_student")
-        student_ids = students["학번"].astype(str).tolist()
-        if saved_student not in student_ids:
-            saved_student = student_ids[0]
+    saved_student = st.session_state.get("teacher_selected_student")
+    student_ids = students["학번"].astype(str).tolist()
+    if saved_student not in student_ids:
+        saved_student = student_ids[0]
 
-        selected_id = st.selectbox(
-            "채점할 학생 선택",
-            student_ids,
-            index=student_ids.index(saved_student),
-            format_func=lambda x: (
-                f"{x} · {students.loc[students['학번'].astype(str) == str(x), '이름'].iloc[0]}"
-            ),
-            key="teacher_eval_student_selector",
-        )
-
-        st.session_state["teacher_selected_student"] = selected_id
-        render_teacher_logs(selected_id, total_sessions)
+    selected_id = st.selectbox(
+        "채점할 학생 선택",
+        student_ids,
+        index=student_ids.index(saved_student),
+        format_func=lambda x: (
+            f"{x} · {students.loc[students['학번'].astype(str) == str(x), '이름'].iloc[0]}"
+        ),
+        key="teacher_eval_student_selector",
+    )
+    st.session_state["teacher_selected_student"] = selected_id
+    render_teacher_logs(selected_id, total_sessions)
 
 
 # =========================================================
