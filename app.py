@@ -1957,30 +1957,43 @@ def render_teacher_settings() -> None:
             except ValueError:
                 pass
 
-    with st.form(f"schedule_form_{class_code}_{current}"):
-        schedule_rows = []
-        for session_no in range(1, current + 1):
-            c1, c2 = st.columns([1, 2])
-            existing_date = existing_map.get(session_no)
-            with c1:
-                enabled = st.checkbox(
-                    f"{session_no}차시 지정",
-                    value=existing_date is not None,
-                    key=f"schedule_enabled_{class_code}_{session_no}",
-                )
-            with c2:
-                selected_date = st.date_input(
-                    f"{session_no}차시 작성일",
-                    value=existing_date or today_kst(),
-                    disabled=not enabled,
-                    key=f"schedule_date_{class_code}_{session_no}",
-                )
-            schedule_rows.append((session_no, enabled, selected_date))
+    # 체크박스는 form 밖에 두어 클릭 즉시 화면이 다시 실행되도록 합니다.
+    # 그래야 "지정"을 체크하는 순간 오른쪽 날짜 입력칸이 활성화됩니다.
+    schedule_rows = []
 
-        submitted = st.form_submit_button(
-            f"{format_class_code(class_code)} 작성 날짜 저장",
-            use_container_width=True,
-        )
+    for session_no in range(1, current + 1):
+        c1, c2 = st.columns([1, 2])
+        existing_date = existing_map.get(session_no)
+
+        with c1:
+            enabled = st.checkbox(
+                f"{session_no}차시 지정",
+                value=existing_date is not None,
+                key=f"schedule_enabled_{class_code}_{session_no}",
+            )
+
+        with c2:
+            selected_date = st.date_input(
+                f"{session_no}차시 작성일",
+                value=existing_date or today_kst(),
+                disabled=not enabled,
+                key=f"schedule_date_{class_code}_{session_no}",
+                format="YYYY/MM/DD",
+            )
+
+        schedule_rows.append((session_no, enabled, selected_date))
+
+    st.caption(
+        "※ '차시 지정'을 체크하면 날짜 입력칸이 즉시 활성화됩니다. "
+        "체크하지 않은 차시는 학생에게 잠금 상태로 표시됩니다."
+    )
+
+    submitted = st.button(
+        f"{format_class_code(class_code)} 작성 날짜 저장",
+        use_container_width=True,
+        type="primary",
+        key=f"save_schedule_{class_code}_{current}",
+    )
 
     if submitted:
         all_schedules = get_schedules()
@@ -2007,7 +2020,9 @@ def render_teacher_settings() -> None:
             )
 
         update_sheet("Schedules", all_schedules)
-        st.success(f"{format_class_code(class_code)}의 차시 작성 날짜가 저장되었습니다.")
+        st.success(
+            f"{format_class_code(class_code)}의 차시 작성 날짜가 저장되었습니다."
+        )
         st.rerun()
 
     st.markdown("### 현재 설정 요약")
