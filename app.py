@@ -327,6 +327,97 @@ def get_logs(student_id: Optional[str] = None) -> pd.DataFrame:
     return df
 
 
+def parse_reflection(raw: Any) -> Dict[str, str]:
+    """기존 Logs의 한 칸짜리 요약및느낀점을 5개 항목으로 복원합니다."""
+    text = normalize_text(raw)
+    result = {
+        "book_title": "",
+        "author": "",
+        "summary": "",
+        "quote": "",
+        "question": "",
+        "answer": "",
+        "thoughts": "",
+    }
+    if not text:
+        return result
+
+    labels = {
+        "[도서명]": "book_title",
+        "[저자]": "author",
+        "[오늘 읽은 내용 짧은 요약]": "summary",
+        "[가장 인상 깊은 문장과 이유]": "quote",
+        "[나의 질문]": "question",
+        "[질문에 대한 나의 생각/답변]": "answer",
+        "[나의 생각과 느낌]": "thoughts",
+    }
+
+    current_key = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped in labels:
+            current_key = labels[stripped]
+            continue
+        if current_key:
+            if result[current_key]:
+                result[current_key] += "\n" + line
+            else:
+                result[current_key] = line
+
+    # 이전 버전에서 저장된 자유 형식 텍스트는 요약으로 보여 줍니다.
+    if not any(result.values()):
+        result["summary"] = text
+
+    return result
+
+
+def build_reflection(
+    book_title: str,
+    author: str,
+    summary: str,
+    quote: str,
+    question: str,
+    answer: str,
+    thoughts: str,
+) -> str:
+    """Logs의 기존 '요약및느낀점' 한 칸에 구조화된 내용을 저장합니다."""
+    sections = [
+        ("[도서명]", book_title.strip()),
+        ("[저자]", author.strip()),
+        ("[오늘 읽은 내용 짧은 요약]", summary.strip()),
+        ("[가장 인상 깊은 문장과 이유]", quote.strip()),
+        ("[나의 질문]", question.strip()),
+        ("[질문에 대한 나의 생각/답변]", answer.strip()),
+        ("[나의 생각과 느낌]", thoughts.strip()),
+    ]
+    return "\n\n".join(
+        f"{label}\n{value}" for label, value in sections if value
+    )
+
+
+def reflection_html(raw: Any) -> str:
+    """교사 화면에서 구조화된 독서 기록을 보기 좋게 렌더링합니다."""
+    data = parse_reflection(raw)
+    labels = [
+        ("오늘 읽은 내용 짧은 요약", "summary"),
+        ("가장 인상 깊은 문장과 이유", "quote"),
+        ("나의 질문", "question"),
+        ("질문에 대한 나의 생각/답변", "answer"),
+        ("나의 생각과 느낌", "thoughts"),
+    ]
+    chunks = []
+    for title, key in labels:
+        value = data.get(key, "").strip()
+        if value:
+            safe = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+            chunks.append(
+                f'<div style="margin-bottom:.9rem;">'
+                f'<div style="font-weight:800;color:#4834D4;margin-bottom:.25rem;">{title}</div>'
+                f'<div>{safe}</div></div>'
+            )
+    return "".join(chunks) if chunks else '<div class="help-text">작성 내용 없음</div>'
+
+
 def get_evaluations(student_id: Optional[str] = None) -> pd.DataFrame:
     df = read_sheet("Evaluations").copy()
     if df.empty:
@@ -871,10 +962,11 @@ def render_books_tab(student_id: str) -> None:
 
 def render_log_tab(student_id: str, total_sessions: int) -> None:
     st.markdown('<div class="section-title">차시별 독서 누가기록</div>', unsafe_allow_html=True)
+    st.caption("한 차시의 기록은 아래 독서 질문에 따라 작성합니다. 저장하면 다음에 다시 열었을 때 내용이 자동으로 복원됩니다.")
 
-    books = get_books(student_id)
+    books = get_student_books_cached(student_id)
     if books.empty:
-        st.warning("먼저 '선택 도서 등록' 탭에서 이번 학기 책을 등록해 주세요.")
+        st.warning("먼저 '선택 도서 등록'에서 이번 학기 책을 등록해 주세요.")
         return
 
     logs = get_logs(student_id)
@@ -890,11 +982,103 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
         key="log_session_selector",
     )
     row = existing_by_session.get(selected_session)
+    reflection = parse_reflection(row["요약및느낀점"]) if row is not None else {}
 
     if row is not None:
-        st.info(f"{selected_session}차시 기존 기록을 불러왔습니다. 저장하면 업데이트됩니다.")
+        st.info(f"{selected_session}차시 기존 기록을 불러왔습니다. 수정 후 저장하면 업데이트됩니다.")
+
+    # 학생이 등록한 도서 중 현재 기록의 도서를 선택할 수 있도록 합니다.
+    book_records = books.sort_values("도서번호").to_dict("records")
+    if len(book_records) == 1:
+        selected_book = book_records[0]
+    else:
+        book_labels = [
+            f"도서 {safe_int(b['도서번호'])} · {normalize_text(b['도서명'])} — {normalize_text(b['저자'])}"
+            for b in book_records
+        ]
+        selected_book_index = st.selectbox(
+            "이번 기록의 도서",
+            list(range(len(book_records))),
+            format_func=lambda i: book_labels[i],
+            key=f"log_book_selector_{selected_session}",
+        )
+        selected_book = book_records[selected_book_index]
+
+    default_title = reflection.get("book_title") or normalize_text(selected_book["도서명"])
+    default_author = reflection.get("author") or normalize_text(selected_book["저자"])
 
     with st.form("reading_log_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            book_title = st.text_input(
+                "책 제목 *",
+                value=default_title,
+                placeholder="예: 아몬드",
+            )
+        with c2:
+            c_start = safe_int(row["시작페이지"], 1) if row is not None else 1
+            c_end = safe_int(row["끝페이지"], 1) if row is not None else 1
+            page_range = st.text_input(
+                "오늘 읽은 페이지 범위 (예: 12~35p) *",
+                value=f"{c_start}~{c_end}p" if row is not None else "",
+                placeholder="예: 12~35p",
+            )
+
+        author = st.text_input(
+            "작가 이름 *",
+            value=default_author,
+            placeholder="예: 손원평",
+        )
+
+        st.markdown("### 1. 오늘 읽은 내용 짧은 요약 (핵심 줄거리) *")
+        summary = st.text_area(
+            "요약",
+            value=reflection.get("summary", ""),
+            height=120,
+            placeholder="오늘 읽은 부분에서 어떤 일이 있었는지 핵심 내용만 짧게 정리해 보세요.",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 2. 가장 인상 깊은 문장과 이유")
+        quote = st.text_area(
+            "인상 깊은 문장과 이유",
+            value=reflection.get("quote", ""),
+            height=105,
+            placeholder="기억에 남은 문장이나 장면을 적고, 왜 인상 깊었는지 써 보세요.",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 3. 읽은 내용을 바탕으로 만든 질문과 답변")
+        q1, q2 = st.columns(2)
+        with q1:
+            st.markdown("**3-1. 나의 질문**")
+            question = st.text_area(
+                "나의 질문",
+                value=reflection.get("question", ""),
+                height=110,
+                placeholder="예: 주인공은 왜 그런 선택을 했을까?",
+                label_visibility="collapsed",
+            )
+        with q2:
+            st.markdown("**3-2. 질문에 대한 나의 생각/답변**")
+            answer = st.text_area(
+                "질문에 대한 나의 생각/답변",
+                value=reflection.get("answer", ""),
+                height=110,
+                placeholder="예: 자신이 중요하게 생각하는 가치를 지키기 위해서였을 것이다.",
+                label_visibility="collapsed",
+            )
+
+        st.markdown("### 4. 나의 생각과 느낌 (느낀점/깨달은점) *")
+        thoughts = st.text_area(
+            "나의 생각과 느낌",
+            value=reflection.get("thoughts", ""),
+            height=140,
+            placeholder="책을 읽고 새롭게 생각하게 된 점, 느낀 점, 깨달은 점 등을 자유롭게 써 보세요.",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("###")
         log_date = st.date_input(
             "읽은 날짜",
             value=(
@@ -904,23 +1088,7 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
             ),
         )
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            start_page = st.number_input(
-                "오늘 읽은 시작 페이지",
-                min_value=1,
-                max_value=10000,
-                value=max(1, safe_int(row["시작페이지"], 1)) if row is not None else 1,
-                step=1,
-            )
-        with c2:
-            end_page = st.number_input(
-                "오늘 읽은 끝 페이지",
-                min_value=1,
-                max_value=10000,
-                value=max(1, safe_int(row["끝페이지"], 1)) if row is not None else 1,
-                step=1,
-            )
+        c3, c4 = st.columns(2)
         with c3:
             minutes = st.number_input(
                 "독서 시간(분)",
@@ -929,13 +1097,9 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
                 value=max(0, safe_int(row["독서시간(분)"])) if row is not None else 0,
                 step=5,
             )
-
-        summary = st.text_area(
-            "차시별 핵심 요약 및 느낀 점",
-            value=normalize_text(row["요약및느낀점"]) if row is not None else "",
-            height=170,
-            placeholder="오늘 읽은 내용의 핵심, 인상 깊은 부분, 생각의 변화 등을 적어 주세요.",
-        )
+        with c4:
+            st.markdown("**페이지 범위 안내**")
+            st.caption("예: 12~35p → 읽은 페이지 24쪽으로 자동 계산")
 
         submitted = st.form_submit_button(
             "독서 기록 저장하기",
@@ -943,11 +1107,37 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
         )
 
     if submitted:
-        if end_page < start_page:
-            st.error("끝 페이지는 시작 페이지보다 크거나 같아야 합니다.")
+        import re
+        page_match = re.fullmatch(r"\s*(\d+)\s*[~\-–—]\s*(\d+)\s*p?\s*", page_range, re.IGNORECASE)
+        if not page_match:
+            st.error("페이지 범위를 `12~35p`와 같은 형식으로 입력해 주세요.")
+            return
+
+        start_page = int(page_match.group(1))
+        end_page = int(page_match.group(2))
+        if start_page < 1 or end_page < start_page:
+            st.error("페이지 범위를 확인해 주세요. 끝 페이지는 시작 페이지보다 크거나 같아야 합니다.")
+            return
+        if not book_title.strip() or not author.strip():
+            st.error("책 제목과 작가 이름을 입력해 주세요.")
+            return
+        if not summary.strip():
+            st.error("1번 '오늘 읽은 내용 짧은 요약'을 작성해 주세요.")
+            return
+        if not thoughts.strip():
+            st.error("4번 '나의 생각과 느낌'을 작성해 주세요.")
             return
 
         pages_read = int(end_page - start_page + 1)
+        structured_text = build_reflection(
+            book_title,
+            author,
+            summary,
+            quote,
+            question,
+            answer,
+            thoughts,
+        )
 
         upsert_row(
             "Logs",
@@ -955,17 +1145,16 @@ def render_log_tab(student_id: str, total_sessions: int) -> None:
                 "학번": student_id,
                 "차시": selected_session,
                 "날짜": log_date.strftime("%Y-%m-%d"),
-                "시작페이지": int(start_page),
-                "끝페이지": int(end_page),
+                "시작페이지": start_page,
+                "끝페이지": end_page,
                 "읽은페이지수": pages_read,
                 "독서시간(분)": int(minutes),
-                "요약및느낀점": summary.strip(),
+                "요약및느낀점": structured_text,
             },
             ["학번", "차시"],
         )
         st.success(
-            f"{selected_session}차시 기록이 저장되었습니다. "
-            f"읽은 페이지 {pages_read}쪽"
+            f"{selected_session}차시 기록이 저장되었습니다. 읽은 페이지 {pages_read}쪽"
         )
         st.rerun()
 
@@ -1353,18 +1542,21 @@ def render_teacher_logs(student_id: str, total_sessions: int) -> None:
     if logs.empty:
         st.info("아직 작성된 누가기록이 없습니다.")
     else:
-        display = logs[
-            [
-                "차시",
-                "날짜",
-                "시작페이지",
-                "끝페이지",
-                "읽은페이지수",
-                "독서시간(분)",
-                "요약및느낀점",
-            ]
-        ].sort_values("차시")
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        for _, log_row in logs.sort_values("차시").iterrows():
+            session_no = safe_int(log_row["차시"])
+            title = parse_reflection(log_row["요약및느낀점"]).get("book_title", "")
+            with st.expander(
+                f"{session_no}차시 · {normalize_text(log_row['날짜'])} · "
+                f"{safe_int(log_row['시작페이지'])}~{safe_int(log_row['끝페이지'])}p · "
+                f"{safe_int(log_row['읽은페이지수'])}쪽 · {safe_int(log_row['독서시간(분)'])}분"
+            ):
+                if title:
+                    author = parse_reflection(log_row["요약및느낀점"]).get("author", "")
+                    st.markdown(f"**책 제목:** {title}  \n**작가:** {author}")
+                st.markdown(
+                    f'<div class="card">{reflection_html(log_row["요약및느낀점"])}</div>',
+                    unsafe_allow_html=True,
+                )
 
     st.markdown("###")
     st.markdown('<div class="section-title">✏️ 수행평가 채점 입력</div>', unsafe_allow_html=True)
